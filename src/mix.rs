@@ -797,17 +797,23 @@ impl Game {
         if !self.attempt_is_complete() {
             return None;
         }
-        let mut picked: Vec<usize> = self.attempt.iter().map(|e| e.pigment).collect();
-        let mut shares: Vec<usize> = self.attempt.iter().map(|e| e.parts).collect();
         // Compare as sets with aligned shares: the player may have picked in
-        // any order.
-        let order: Vec<usize> = (0..picked.len()).collect();
-        let mut sorted = order.clone();
-        sorted.sort_by_key(|&at| picked[at]);
-        picked = sorted.iter().map(|&at| picked[at]).collect();
-        shares = sorted.iter().map(|&at| shares[at]).collect();
+        // any order, so both lists are sorted by pigment id together.
+        let mut played: Vec<(usize, usize)> = self
+            .attempt
+            .iter()
+            .map(|entry| (entry.pigment, entry.parts))
+            .collect();
+        played.sort_unstable_by_key(|&(pigment, _)| pigment);
+        let target: Vec<(usize, usize)> = self
+            .round
+            .ingredients
+            .iter()
+            .copied()
+            .zip(self.round.parts.iter().copied())
+            .collect();
 
-        let solved = picked == self.round.ingredients && shares == self.round.parts;
+        let solved = played == target;
         let worth = if solved {
             Score::round_worth(self.round.revealed.len())
         } else {
@@ -1279,6 +1285,34 @@ mod tests {
         assert_eq!(game.round.palette.len(), 9);
         assert_eq!(game.round.ingredients.len(), 3);
         assert!(game.attempt.is_empty());
+    }
+
+    #[test]
+    fn the_checker_sorts_the_picked_colours_before_comparing() {
+        // The ingredients' own order is (a, b) with a < b; pick b first. The
+        // pairs must align by pigment, or the shares compare against the
+        // wrong ingredient and a correct mix reads as wrong.
+        let mut game = Game::new(Settings::clamped(6, 2, 6, false), 5);
+        let dealt = game
+            .round
+            .ingredients
+            .iter()
+            .copied()
+            .zip(game.round.parts.iter().copied())
+            .collect::<Vec<_>>();
+        // Play deliberately out of order: highest pigment id first.
+        let mut plan = dealt.clone();
+        plan.sort_by_key(|&(pigment, _)| std::cmp::Reverse(pigment));
+        for (pigment, parts) in plan {
+            game.toggle(pigment);
+            for _ in 1..parts {
+                game.nudge(pigment, true);
+            }
+        }
+        assert!(
+            matches!(game.check(), Some(Outcome::Solved(_))),
+            "the true mix must solve whatever order it is picked in (dealt {dealt:?})"
+        );
     }
 
     #[test]
