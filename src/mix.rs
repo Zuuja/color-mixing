@@ -289,7 +289,7 @@ impl Settings {
                 parts,
                 preview.unwrap_or(0) != 0,
                 up_to.unwrap_or(0) != 0,
-                reveal.map_or(true, |value| value != 0),
+                reveal.is_none_or(|value| value != 0),
             ),
             _ => Self::new(),
         }
@@ -462,13 +462,8 @@ impl Round {
     pub fn generate(settings: &Settings, seed: u64) -> Self {
         let mut rng = Rng::new(seed);
         let mut dealt = Self::draw(settings, &mut rng);
-        for _draws in 0..256 {
-            let clean = !dealt.has_ambiguous_recipes(settings.up_to);
-            #[cfg(test)]
-            if clean && std::env::var("CO_DEAL_DEBUG").is_ok() {
-                println!("deal took {_draws} redraws");
-            }
-            if clean {
+        for _ in 0..256 {
+            if !dealt.has_ambiguous_recipes(settings.up_to) {
                 return dealt;
             }
             dealt = Self::draw(settings, &mut rng);
