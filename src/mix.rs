@@ -753,15 +753,16 @@ impl Game {
     /// parts — the only state a check may run in.
     #[must_use]
     pub fn attempt_is_complete(&self) -> bool {
-        self.attempt.len() == self.settings.mix_parts
-            && self.assigned() == self.settings.parts_total
+        self.assigned() == self.settings.parts_total
     }
 
     /// Toggle one pigment in or out of the attempt.
     ///
-    /// Selecting is capped at the mix's own colour count — the player was
-    /// told how many colours the target uses. Deselecting drops the entry
-    /// and its parts.
+    /// The attempt is deliberately not capped at the target's colour count:
+    /// adding a third colour to a two-colour round is how a player finds out
+    /// what it does. The parts jar is the real constraint — six parts cannot
+    /// fund eight colours at one each — and it is enforced by `nudge` and
+    /// `take_back`. Deselecting drops the entry and its parts.
     pub fn toggle(&mut self, pigment: usize) {
         self.checked = None;
         if let Some(at) = self
@@ -770,7 +771,7 @@ impl Game {
             .position(|entry| entry.pigment == pigment)
         {
             self.attempt.remove(at);
-        } else if self.attempt.len() < self.settings.mix_parts {
+        } else if self.attempt.len() < self.settings.parts_total {
             self.attempt.push(Entry { pigment, parts: 1 });
         }
     }
@@ -917,18 +918,7 @@ impl Game {
                 let missing = self.settings.parts_total - self.assigned();
                 if self.attempt.is_empty() {
                     format!(
-                        "Pick {} colours, then split {} parts.",
-                        self.settings.mix_parts, self.settings.parts_total
-                    )
-                } else if self.attempt.len() < self.settings.mix_parts {
-                    format!(
-                        "{} more colour{}, then split {} parts.",
-                        self.settings.mix_parts - self.attempt.len(),
-                        if self.settings.mix_parts - self.attempt.len() == 1 {
-                            ""
-                        } else {
-                            "s"
-                        },
+                        "Pick colours and split {} parts.",
                         self.settings.parts_total
                     )
                 } else if missing > 0 {
@@ -1181,16 +1171,31 @@ mod tests {
             .collect();
         game.toggle(a);
         assert_eq!(game.assigned(), 1);
-        // The cap is the mix's colour count, not the palette's.
+        // The attempt is NOT capped at the target's colour count: extra
+        // colours are how a player explores.
         game.toggle(distractors[0]);
-        assert_eq!(game.attempt.len(), 2, "capped at mix_parts");
         game.toggle(b);
-        assert_eq!(game.attempt.len(), 2, "the third colour is refused");
-        assert!(game.attempt.iter().all(|entry| entry.pigment != b));
+        assert_eq!(game.attempt.len(), 3, "a third colour is allowed");
+        // The remaining three swatches can still join: the cap is the parts
+        // jar (six), which three more colours at one part each exactly fills.
+        let unpicked: Vec<usize> = game
+            .round
+            .palette
+            .iter()
+            .copied()
+            .filter(|id| !game.attempt.iter().any(|entry| entry.pigment == *id))
+            .collect();
+        for id in unpicked {
+            game.toggle(id);
+        }
+        assert_eq!(game.attempt.len(), 6, "every palette colour can be picked");
+        assert_eq!(game.assigned(), 6, "one part each, jar exactly full");
+        // Toggling out clears the entry and its parts.
         game.toggle(distractors[0]);
-        assert_eq!(game.attempt.len(), 1, "toggling out clears the entry");
-        game.toggle(b);
-        assert_eq!(game.attempt.len(), 2);
+        assert!(!game
+            .attempt
+            .iter()
+            .any(|entry| entry.pigment == distractors[0]));
     }
 
     #[test]
@@ -1214,19 +1219,21 @@ mod tests {
     }
 
     #[test]
-    fn a_check_needs_a_complete_attempt() {
+    fn a_check_needs_all_parts_placed() {
         let mut game = Game::new(Settings::clamped(6, 2, 6, false), 5);
         assert_eq!(game.check(), None);
+        // One colour carrying all six parts is a complete attempt now: the
+        // player may test a single-colour guess.
         game.toggle(game.round.ingredients[0]);
         for _ in 0..5 {
             game.nudge(game.round.ingredients[0], true);
         }
-        assert_eq!(
-            game.attempt.len(),
-            1,
-            "one colour is not a complete attempt"
-        );
-        assert_eq!(game.check(), None);
+        assert!(game.attempt_is_complete());
+        assert_eq!(game.check(), Some(Outcome::Wrong));
+        // And an incomplete attempt is still refused.
+        let mut sparse = Game::new(Settings::clamped(6, 2, 6, false), 5);
+        sparse.toggle(sparse.round.ingredients[0]);
+        assert_eq!(sparse.check(), None);
     }
 
     #[test]
@@ -1417,9 +1424,9 @@ mod tests {
     #[test]
     fn the_status_walks_through_the_attempt() {
         let mut game = Game::new(Settings::clamped(6, 2, 6, false), 5);
-        assert_eq!(game.status(), "Pick 2 colours, then split 6 parts.");
+        assert_eq!(game.status(), "Pick colours and split 6 parts.");
         game.toggle(game.round.ingredients[0]);
-        assert_eq!(game.status(), "1 more colour, then split 6 parts.");
+        assert_eq!(game.status(), "5 more parts to place.");
         game.toggle(game.round.ingredients[1]);
         assert_eq!(game.status(), "4 more parts to place.");
         // Fill the parts to the round's own split, one unit at a time.
