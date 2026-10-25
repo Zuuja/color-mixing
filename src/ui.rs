@@ -319,10 +319,10 @@ fn parts_line(game: &Game) -> String {
     listed.sort();
     let placed = game.assigned();
     let total = game.round.parts_used;
-    let suffix = if placed == total {
-        String::new()
-    } else {
-        format!(" — {} more to place", total - placed)
+    let suffix = match placed.cmp(&total) {
+        std::cmp::Ordering::Equal => String::new(),
+        std::cmp::Ordering::Less => format!(" — {} more to place", total - placed),
+        std::cmp::Ordering::Greater => format!(" — {} over", placed - total),
     };
     format!(
         "{} of {} parts: {}{}",

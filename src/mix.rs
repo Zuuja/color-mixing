@@ -476,12 +476,13 @@ impl Round {
         palette.extend(bag.into_iter().take(wanted.saturating_sub(mix_parts)));
         palette.sort_unstable();
 
+        let parts_used: usize = parts.iter().sum();
         Self {
             palette,
             ingredients,
             parts,
             revealed: Vec::new(),
-            parts_used: parts_total,
+            parts_used,
         }
     }
 
@@ -799,25 +800,32 @@ impl Game {
     /// parts — the only state a check may run in.
     #[must_use]
     pub fn attempt_is_complete(&self) -> bool {
-        self.assigned() == self.round.parts_used
+        // "Complete" is not a hard gate any more: it names the state in
+        // which a check has a definite verdict. An attempt at any other size
+        // may still be checked — it just reads as wrong, because the target
+        // used exactly `parts_used` parts.
+        !self.attempt.is_empty()
     }
 
     /// Toggle one pigment in or out of the attempt.
     ///
-    /// The attempt is deliberately not capped at the target's colour count:
-    /// adding a third colour to a two-colour round is how a player finds out
-    /// what it does. The parts jar is the real constraint — six parts cannot
-    /// fund eight colours at one each — and it is enforced by `nudge` and
-    /// `take_back`. Deselecting drops the entry and its parts.
+    /// The attempt is deliberately not capped at the target's shape — not
+    /// its colour count and not its part count. Adding a third colour to a
+    /// two-colour round, or a seventh part to a six-part jar, is how a
+    /// player finds out what overshooting does; the check reads it as wrong
+    /// rather than refusing to run. The one ceiling is the game's own jar
+    /// ([`MAX_PARTS`]), enforced here and in `nudge`. Deselecting drops the
+    /// entry and its parts.
     pub fn toggle(&mut self, pigment: usize) {
         self.checked = None;
+        self.outcome = None;
         if let Some(at) = self
             .attempt
             .iter()
             .position(|entry| entry.pigment == pigment)
         {
             self.attempt.remove(at);
-        } else if self.attempt.len() < self.round.parts_used {
+        } else if self.attempt.len() < MAX_PARTS {
             self.attempt.push(Entry { pigment, parts: 1 });
         }
     }
@@ -827,13 +835,14 @@ impl Game {
     /// what is left of the round's total once the other picks are paid.
     pub fn nudge(&mut self, pigment: usize, up: bool) {
         self.checked = None;
+        self.outcome = None;
         let others: usize = self
             .attempt
             .iter()
             .filter(|other| other.pigment != pigment)
             .map(|other| other.parts)
             .sum();
-        let ceiling = self.round.parts_used.saturating_sub(others).max(1);
+        let ceiling = MAX_PARTS.saturating_sub(others).max(1);
         let Some(entry) = self
             .attempt
             .iter_mut()
@@ -863,6 +872,7 @@ impl Game {
             return;
         };
         self.checked = None;
+        self.outcome = None;
         if self.attempt[at].parts == 1 {
             self.attempt.remove(at);
         } else {
@@ -969,16 +979,30 @@ impl Game {
             Some(Outcome::Solved(worth)) => format!("Solved — +{worth}"),
             Some(Outcome::Wrong) => "Not this mix. Adjust and check again.".to_string(),
             None => {
-                let missing = self.round.parts_used - self.assigned();
                 if self.attempt.is_empty() {
                     format!("Pick colours and split {} parts.", self.round.parts_used)
-                } else if missing > 0 {
-                    format!(
-                        "{missing} more part{} to place.",
-                        if missing == 1 { "" } else { "s" }
-                    )
                 } else {
-                    "All parts placed. Check when ready.".to_string()
+                    match self.assigned().cmp(&self.round.parts_used) {
+                        std::cmp::Ordering::Less => {
+                            let missing = self.round.parts_used - self.assigned();
+                            format!(
+                                "{missing} more part{} to place.",
+                                if missing == 1 { "" } else { "s" }
+                            )
+                        }
+                        std::cmp::Ordering::Equal => {
+                            "All parts placed. Check when ready.".to_string()
+                        }
+                        std::cmp::Ordering::Greater => {
+                            let extra = self.assigned() - self.round.parts_used;
+                            format!(
+                                "{} part{} over — you can check, but the target used {}.",
+                                extra,
+                                if extra == 1 { "" } else { "s" },
+                                self.round.parts_used
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -1264,7 +1288,7 @@ mod tests {
         for _ in 0..99 {
             game.nudge(a, true);
         }
-        assert_eq!(game.assigned(), 4, "never above the round's total");
+        assert_eq!(game.assigned(), MAX_PARTS, "never above the game's jar");
         for _ in 0..99 {
             game.nudge(a, false);
         }
@@ -1277,20 +1301,34 @@ mod tests {
     }
 
     #[test]
-    fn a_check_needs_all_parts_placed() {
+    fn a_check_always_has_a_verdict_once_something_is_picked() {
         let mut game = Game::new(Settings::clamped(6, 2, 6, false), 5);
-        assert_eq!(game.check(), None);
-        // One colour carrying all six parts is a complete attempt now: the
-        // player may test a single-colour guess.
+        assert_eq!(game.check(), None, "nothing picked, nothing to check");
+        // One colour carrying all six parts: a legal guess.
         game.toggle(game.round.ingredients[0]);
         for _ in 0..5 {
             game.nudge(game.round.ingredients[0], true);
         }
-        assert!(game.attempt_is_complete());
         assert_eq!(game.check(), Some(Outcome::Wrong));
-        // And an incomplete attempt is still refused.
+        // Over-filling the jar past the round's total also checks — as
+        // wrong, with the status saying by how much — rather than being
+        // refused. This is the whole point of the free jar.
+        for _ in 0..2 {
+            game.nudge(game.round.ingredients[0], true);
+        }
+        assert_eq!(game.assigned(), 8);
+        assert_eq!(game.check(), Some(Outcome::Wrong));
+        assert_eq!(game.status(), "Not this mix. Adjust and check again.");
+        // The overshoot wording is the pre-check guidance: clear the verdict
+        // by nudging, and the status says by how much the jar is over.
+        game.take_back(game.round.ingredients[0]);
+        assert_eq!(game.assigned(), 7);
+        assert!(game.status().contains("over"), "{:?}", game.status());
+        assert!(game.status().contains("the target used 6"));
+        // An empty attempt is still refused.
         let mut sparse = Game::new(Settings::clamped(6, 2, 6, false), 5);
         sparse.toggle(sparse.round.ingredients[0]);
+        sparse.take_back(sparse.round.ingredients[0]);
         assert_eq!(sparse.check(), None);
     }
 
@@ -1494,6 +1532,28 @@ mod tests {
         assert!(
             game.assigned() <= game.round.parts_used,
             "the jar holds only what the deal used"
+        );
+    }
+
+    #[test]
+    fn up_to_mode_deals_below_the_ceiling_too() {
+        // The unique-solution rejection is biased against small deals: with
+        // fewer colours a second solution is far likelier, so a naive redraw
+        // loop can concentrate every accepted round at the ceiling and the
+        // mode quietly stops varying. The deals the game hands out must
+        // still land below the ceilings.
+        let settings = Settings::clamped_up_to(8, 3, 8, false, true);
+        let mut below = 0;
+        for seed in 0..40u64 {
+            let round = Round::generate(&settings, seed);
+            let total: usize = round.parts.iter().sum();
+            if total < settings.parts_total {
+                below += 1;
+            }
+        }
+        assert!(
+            below >= 8,
+            "expected a healthy spread below the ceiling, got {below}/40"
         );
     }
 
