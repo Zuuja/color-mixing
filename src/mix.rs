@@ -994,6 +994,9 @@ impl Game {
         // targets: the round was dealt with at-most numbers, so a deal that
         // landed on 2 colours in 5 parts is the target, and the player may
         // have been told only ceilings.
+        // In ceilings mode the deal still has one true recipe; exact mode
+        // is the same comparison. The check never refuses — the only gate
+        // is "something is picked".
         let solved = played == target;
         let worth = if solved {
             Score::round_worth(self.round.revealed.len())
@@ -1050,28 +1053,49 @@ impl Game {
             Some(Outcome::Wrong) => "Not this mix. Adjust and check again.".to_string(),
             None => {
                 if self.attempt.is_empty() {
-                    format!("Pick colours and split {} parts.", self.round.parts_used)
+                    return if self.settings.up_to {
+                        format!(
+                            "Pick colours and use up to {} parts.",
+                            self.round.parts_used
+                        )
+                    } else {
+                        format!("Pick colours and split {} parts.", self.round.parts_used)
+                    };
+                }
+                let over = self.assigned().cmp(&self.round.parts_used);
+                let noun = if self.settings.up_to {
+                    // In ceilings mode the target's size is a surprise to
+                    // discover, not a number to match, so the words must not
+                    // name it as if it were known.
+                    ("Part of your mix", "over your mix so far")
                 } else {
-                    match self.assigned().cmp(&self.round.parts_used) {
-                        std::cmp::Ordering::Less => {
-                            let missing = self.round.parts_used - self.assigned();
+                    ("Part", "over the target's size")
+                };
+                match over {
+                    std::cmp::Ordering::Less => {
+                        let missing = self.round.parts_used - self.assigned();
+                        if self.settings.up_to {
+                            format!(
+                                "{missing} more part{} if you want them.",
+                                if missing == 1 { "" } else { "s" }
+                            )
+                        } else {
                             format!(
                                 "{missing} more part{} to place.",
                                 if missing == 1 { "" } else { "s" }
                             )
                         }
-                        std::cmp::Ordering::Equal => {
-                            "All parts placed. Check when ready.".to_string()
-                        }
-                        std::cmp::Ordering::Greater => {
-                            let extra = self.assigned() - self.round.parts_used;
-                            format!(
-                                "{} part{} over — you can check, but the target used {}.",
-                                extra,
-                                if extra == 1 { "" } else { "s" },
-                                self.round.parts_used
-                            )
-                        }
+                    }
+                    std::cmp::Ordering::Equal => "All parts placed. Check when ready.".to_string(),
+                    std::cmp::Ordering::Greater => {
+                        let extra = self.assigned() - self.round.parts_used;
+                        format!(
+                            "{} {}{} — {}",
+                            extra,
+                            noun.0,
+                            if extra == 1 { "" } else { "s" },
+                            noun.1
+                        )
                     }
                 }
             }
@@ -1442,7 +1466,11 @@ mod tests {
         game.take_back(game.round.ingredients[0]);
         assert_eq!(game.assigned(), 7);
         assert!(game.status().contains("over"), "{:?}", game.status());
-        assert!(game.status().contains("the target used 6"));
+        assert!(
+            game.status().contains("over the target's size"),
+            "{:?}",
+            game.status()
+        );
         // An empty attempt is still refused.
         let mut sparse = Game::new(Settings::clamped(6, 2, 6, false), 5);
         sparse.toggle(sparse.round.ingredients[0]);
@@ -1771,6 +1799,26 @@ mod tests {
         assert_eq!(
             checked, 0,
             "{checked} accepted deals had a 2-part second recipe"
+        );
+    }
+
+    #[test]
+    fn up_to_mode_deals_skew_below_the_ceiling() {
+        // "Up to 6" must not deal 6 every time — that is exact mode in a
+        // hat, and it leaves the player nothing to explore.
+        let settings = Settings::clamped_up_to(6, 2, 6, false, true);
+        let mut at_ceiling = 0;
+        let mut deals = 0;
+        for seed in 0..120u64 {
+            let round = Round::generate(&settings, seed);
+            deals += 1;
+            if round.parts_used >= settings.parts_total {
+                at_ceiling += 1;
+            }
+        }
+        assert!(
+            at_ceiling * 2 <= deals,
+            "too many deals pinned at the ceiling: {at_ceiling}/{deals}"
         );
     }
 

@@ -333,10 +333,18 @@ fn parts_line(game: &Game) -> String {
     listed.sort();
     let placed = game.assigned();
     let total = game.round.parts_used;
-    let suffix = match placed.cmp(&total) {
-        std::cmp::Ordering::Equal => String::new(),
-        std::cmp::Ordering::Less => format!(" — {} more to place", total - placed),
-        std::cmp::Ordering::Greater => format!(" — {} over", placed - total),
+    // Ceilings mode never calls the remainder a requirement: "to place"
+    // becomes "of room left".
+    let suffix = match (placed.cmp(&total), game.settings.up_to) {
+        (std::cmp::Ordering::Equal, _) => String::new(),
+        (std::cmp::Ordering::Less, false) => format!(" — {} more to place", total - placed),
+        (std::cmp::Ordering::Less, true) => {
+            format!(" — {} of room left", total - placed)
+        }
+        (std::cmp::Ordering::Greater, over) => {
+            let _ = over;
+            format!(" — {} over", placed - total)
+        }
     };
     format!(
         "{colours}, {placed}/{} parts: {}{}",
