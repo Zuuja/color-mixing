@@ -351,6 +351,12 @@ button:disabled {
   min-height: 44px;
 }
 
+/* The hide-numbers row only applies in ceilings mode; greyed elsewhere so
+   the control reads as unavailable rather than broken. */
+#settings .check-row[data-off="true"] {
+  opacity: .45;
+}
+
 #settings input[type="checkbox"] {
   width: 1.15rem;
   height: 1.15rem;

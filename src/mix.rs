@@ -161,6 +161,11 @@ pub struct Settings {
     /// attempt may solve with fewer of either. When false (the classic
     /// mode) both numbers are exact.
     pub up_to: bool,
+    /// When false, a ceilings-mode round keeps its dealt colour count and
+    /// part count to itself: no line on the page names them, and the
+    /// player judges the mix by eye alone. Only meaningful with `up_to`;
+    /// exact mode has no numbers to hide — they are the settings.
+    pub reveal_numbers: bool,
 }
 
 impl Default for Settings {
@@ -180,6 +185,7 @@ impl Settings {
             parts_total: 6,
             show_preview: false,
             up_to: false,
+            reveal_numbers: true,
         }
     }
 
@@ -195,7 +201,14 @@ impl Settings {
         parts_total: usize,
         show_preview: bool,
     ) -> Self {
-        Self::clamped_up_to(color_count, mix_parts, parts_total, show_preview, false)
+        Self::full(
+            color_count,
+            mix_parts,
+            parts_total,
+            show_preview,
+            false,
+            true,
+        )
     }
 
     /// [`Self::clamped`], with the up-to flag.
@@ -213,6 +226,27 @@ impl Settings {
         show_preview: bool,
         up_to: bool,
     ) -> Self {
+        Self::full(
+            color_count,
+            mix_parts,
+            parts_total,
+            show_preview,
+            up_to,
+            true,
+        )
+    }
+
+    /// Every knob, clamped. `reveal_numbers` only matters when `up_to` is
+    /// set; it is stored either way so a toggle survives round-trips.
+    #[must_use]
+    pub fn full(
+        color_count: usize,
+        mix_parts: usize,
+        parts_total: usize,
+        show_preview: bool,
+        up_to: bool,
+        reveal_numbers: bool,
+    ) -> Self {
         let mix_parts = mix_parts.clamp(MIN_MIX, MAX_MIX);
         // Up-to deals may use as many parts as colours (equal shares at one
         // each are legal), so the floor drops to mix_parts; exact mode keeps
@@ -224,6 +258,7 @@ impl Settings {
             parts_total: parts_total.clamp(parts_floor.max(MIN_MIX), MAX_PARTS),
             show_preview,
             up_to,
+            reveal_numbers,
         }
     }
 
@@ -245,15 +280,16 @@ impl Settings {
         };
         // A stored line from before the preview flag existed has only three
         // fields; `preview` then reads as `None` and means "off".
-        let (count, mix, parts, preview, up_to) =
-            (number(), number(), number(), number(), number());
+        let (count, mix, parts, preview, up_to, reveal) =
+            (number(), number(), number(), number(), number(), number());
         match (count, mix, parts, preview) {
-            (Some(count), Some(mix), Some(parts), preview) => Self::clamped_up_to(
+            (Some(count), Some(mix), Some(parts), preview) => Self::full(
                 count,
                 mix,
                 parts,
                 preview.unwrap_or(0) != 0,
                 up_to.unwrap_or(0) != 0,
+                reveal.map_or(true, |value| value != 0),
             ),
             _ => Self::new(),
         }
@@ -275,12 +311,13 @@ impl Settings {
             return None;
         }
         Some(format!(
-            "{},{},{},{},{}",
+            "{},{},{},{},{},{}",
             self.color_count,
             self.mix_parts,
             self.parts_total,
             u8::from(self.show_preview),
-            u8::from(self.up_to)
+            u8::from(self.up_to),
+            u8::from(self.reveal_numbers)
         ))
     }
 }
@@ -1052,7 +1089,14 @@ impl Game {
             Some(Outcome::Solved(worth)) => format!("Solved — +{worth}"),
             Some(Outcome::Wrong) => "Not this mix. Adjust and check again.".to_string(),
             None => {
+                // Hidden numbers in ceilings mode: nothing names the deal's
+                // colour count or part count — the player judges by eye and
+                // by whether a check solves.
+                let hidden = self.settings.up_to && !self.settings.reveal_numbers;
                 if self.attempt.is_empty() {
+                    if hidden {
+                        return "Pick colours and mix. Check to test a guess.".to_string();
+                    }
                     return if self.settings.up_to {
                         format!(
                             "Pick colours and use up to {} parts.",
@@ -1060,6 +1104,14 @@ impl Game {
                         )
                     } else {
                         format!("Pick colours and split {} parts.", self.round.parts_used)
+                    };
+                }
+                if hidden {
+                    return match self.assigned().cmp(&self.round.parts_used) {
+                        std::cmp::Ordering::Equal => {
+                            "All placed — that may or may not be it. Check.".to_string()
+                        }
+                        _ => "Keep mixing, or check your guess.".to_string(),
                     };
                 }
                 let over = self.assigned().cmp(&self.round.parts_used);
@@ -1106,10 +1158,17 @@ impl Game {
     #[must_use]
     pub fn round_line(&self) -> String {
         if self.settings.up_to {
-            format!(
-                "Mix up to {} colours in up to {} parts",
-                self.settings.mix_parts, self.settings.parts_total
-            )
+            if self.settings.reveal_numbers {
+                format!(
+                    "Mix up to {} colours in up to {} parts",
+                    self.settings.mix_parts, self.settings.parts_total
+                )
+            } else {
+                format!(
+                    "Mix up to {} colours, size unknown",
+                    self.settings.mix_parts
+                )
+            }
         } else {
             format!(
                 "Mix {} colours in {} parts",
@@ -1877,11 +1936,14 @@ mod tests {
             "a 3-colour mix may deal as few as 4 parts"
         );
         let stored = s.to_stored().expect("stores");
-        assert_eq!(stored, "8,3,4,1,1");
+        assert_eq!(stored, "8,3,4,1,1,1");
         assert_eq!(Settings::from_stored(Some(&stored)), s);
-        // The old 4-field line still reads, with up-to off.
-        let old = Settings::from_stored(Some("8,3,9,0"));
-        assert!(!old.up_to);
+        // The old 4-field and 5-field lines still read.
+        let old4 = Settings::from_stored(Some("8,3,9,0"));
+        assert!(!old4.up_to);
+        assert!(old4.reveal_numbers, "numbers default to shown");
+        let old5 = Settings::from_stored(Some("8,3,4,1,1"));
+        assert!(old5.reveal_numbers);
     }
 
     #[test]

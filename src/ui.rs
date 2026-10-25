@@ -317,6 +317,21 @@ fn chip(document: &Document, pigment: usize) -> Option<HtmlButtonElement> {
 /// player exploring; parts over mean the same. The words say so once, here,
 /// instead of the numbers lying by omission.
 fn parts_line(game: &Game) -> String {
+    // Hidden numbers: the line lists the mix by name and part only — the
+    // dealt colour count, the dealt part count and the remaining room all
+    // stay secret, because the player is meant to judge by eye.
+    if game.settings.up_to && !game.settings.reveal_numbers {
+        if game.attempt.is_empty() {
+            return String::new();
+        }
+        let mut listed: Vec<String> = game
+            .attempt
+            .iter()
+            .map(|entry| format!("{} {}", entry.parts, mix::PIGMENTS[entry.pigment].name))
+            .collect();
+        listed.sort();
+        return format!("Your mix: {}", listed.join(", "));
+    }
     let colours = format!(
         "{}/{} colours",
         game.attempt.len(),
@@ -341,10 +356,7 @@ fn parts_line(game: &Game) -> String {
         (std::cmp::Ordering::Less, true) => {
             format!(" — {} of room left", total - placed)
         }
-        (std::cmp::Ordering::Greater, over) => {
-            let _ = over;
-            format!(" — {} over", placed - total)
-        }
+        (std::cmp::Ordering::Greater, _) => format!(" — {} over", placed - total),
     };
     format!(
         "{colours}, {placed}/{} parts: {}{}",
@@ -494,6 +506,14 @@ fn render_settings(document: &Document, game: &Game) {
     if let Some(box_) = input_element(document, "up-to") {
         box_.set_checked(settings.up_to);
     }
+    if let Some(box_) = input_element(document, "hide-numbers") {
+        box_.set_checked(!settings.reveal_numbers);
+    }
+    // Hiding numbers only means something in ceilings mode: grey the row out
+    // in every other shape, so the control never looks broken.
+    if let Some(row) = element(document, "hide-numbers-row") {
+        let _ = row.set_attribute("data-off", if settings.up_to { "false" } else { "true" });
+    }
 }
 
 /// Bind the controls, once, at start.
@@ -618,6 +638,14 @@ fn bind(window: &Window, document: &Document, state: &Shared) {
             apply_settings_from_controls(&window, &document, &state);
         }
     });
+    on_change(&document, "hide-numbers", {
+        let window = Rc::clone(&window);
+        let document = Rc::clone(&document);
+        let state = Rc::clone(state);
+        move |_| {
+            apply_settings_from_controls(&window, &document, &state);
+        }
+    });
 }
 
 /// Read the four controls and apply them as the game's new settings.
@@ -629,13 +657,15 @@ fn apply_settings_from_controls(window: &Window, document: &Document, state: &Sh
         |id: &str| -> Option<usize> { select_element(document, id)?.value().parse::<usize>().ok() };
     let preview = input_element(document, "show-preview").is_some_and(|box_| box_.checked());
     let up_to = input_element(document, "up-to").is_some_and(|box_| box_.checked());
+    let hide = input_element(document, "hide-numbers").is_some_and(|box_| box_.checked());
     let current = state.borrow().game.settings;
-    let settings = Settings::clamped_up_to(
+    let settings = Settings::full(
         read("color-count").unwrap_or(current.color_count),
         read("mix-parts").unwrap_or(current.mix_parts),
         read("parts-total").unwrap_or(current.parts_total),
         preview,
         up_to,
+        !hide,
     );
     // Only the three numbers change the round's shape. A settings change
     // that did not touch them must not deal a fresh round — the player's
