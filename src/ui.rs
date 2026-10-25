@@ -470,6 +470,9 @@ fn render_settings(document: &Document, game: &Game) {
     if let Some(box_) = input_element(document, "show-preview") {
         box_.set_checked(settings.show_preview);
     }
+    if let Some(box_) = input_element(document, "up-to") {
+        box_.set_checked(settings.up_to);
+    }
 }
 
 /// Bind the controls, once, at start.
@@ -586,6 +589,14 @@ fn bind(window: &Window, document: &Document, state: &Shared) {
             apply_settings_from_controls(&window, &document, &state);
         }
     });
+    on_change(&document, "up-to", {
+        let window = Rc::clone(&window);
+        let document = Rc::clone(&document);
+        let state = Rc::clone(state);
+        move |_| {
+            apply_settings_from_controls(&window, &document, &state);
+        }
+    });
 }
 
 /// Read the four controls and apply them as the game's new settings.
@@ -596,12 +607,14 @@ fn apply_settings_from_controls(window: &Window, document: &Document, state: &Sh
     let read =
         |id: &str| -> Option<usize> { select_element(document, id)?.value().parse::<usize>().ok() };
     let preview = input_element(document, "show-preview").is_some_and(|box_| box_.checked());
+    let up_to = input_element(document, "up-to").is_some_and(|box_| box_.checked());
     let current = state.borrow().game.settings;
-    let settings = Settings::clamped(
+    let settings = Settings::clamped_up_to(
         read("color-count").unwrap_or(current.color_count),
         read("mix-parts").unwrap_or(current.mix_parts),
         read("parts-total").unwrap_or(current.parts_total),
         preview,
+        up_to,
     );
     {
         let mut state_ref = state.borrow_mut();

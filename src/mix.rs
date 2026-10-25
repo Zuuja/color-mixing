@@ -156,6 +156,11 @@ pub struct Settings {
     pub mix_parts: usize,
     pub parts_total: usize,
     pub show_preview: bool,
+    /// When true, `mix_parts` and `parts_total` are *ceilings*: the target
+    /// uses at most that many colours and at most that many parts, and the
+    /// attempt may solve with fewer of either. When false (the classic
+    /// mode) both numbers are exact.
+    pub up_to: bool,
 }
 
 impl Default for Settings {
@@ -174,6 +179,7 @@ impl Settings {
             mix_parts: 2,
             parts_total: 6,
             show_preview: false,
+            up_to: false,
         }
     }
 
@@ -189,12 +195,32 @@ impl Settings {
         parts_total: usize,
         show_preview: bool,
     ) -> Self {
+        Self::clamped_up_to(color_count, mix_parts, parts_total, show_preview, false)
+    }
+
+    /// [`Self::clamped`], with the up-to flag.
+    ///
+    /// In up-to mode the parts floor relaxes: a target may use fewer parts
+    /// than colours if the deal lands there, so the floor is `mix_parts`
+    /// divided down — and the mix floor falls to `MIN_MIX`, which it already
+    /// is. The numbers stay derivable from `mix_parts`, so they cannot
+    /// disagree.
+    #[must_use]
+    pub fn clamped_up_to(
+        color_count: usize,
+        mix_parts: usize,
+        parts_total: usize,
+        show_preview: bool,
+        up_to: bool,
+    ) -> Self {
         let mix_parts = mix_parts.clamp(MIN_MIX, MAX_MIX);
+        let parts_floor = if up_to { MIN_MIX } else { mix_parts + 1 };
         Self {
             color_count: color_count.clamp(mix_parts + 1, MAX_COLORS),
             mix_parts,
-            parts_total: parts_total.clamp(mix_parts + 1, MAX_PARTS),
+            parts_total: parts_total.clamp(parts_floor.max(MIN_MIX), MAX_PARTS),
             show_preview,
+            up_to,
         }
     }
 
@@ -216,11 +242,16 @@ impl Settings {
         };
         // A stored line from before the preview flag existed has only three
         // fields; `preview` then reads as `None` and means "off".
-        let (count, mix, parts, preview) = (number(), number(), number(), number());
+        let (count, mix, parts, preview, up_to) =
+            (number(), number(), number(), number(), number());
         match (count, mix, parts, preview) {
-            (Some(count), Some(mix), Some(parts), preview) => {
-                Self::clamped(count, mix, parts, preview.unwrap_or(0) != 0)
-            }
+            (Some(count), Some(mix), Some(parts), preview) => Self::clamped_up_to(
+                count,
+                mix,
+                parts,
+                preview.unwrap_or(0) != 0,
+                up_to.unwrap_or(0) != 0,
+            ),
             _ => Self::new(),
         }
     }
@@ -233,11 +264,12 @@ impl Settings {
             return None;
         }
         Some(format!(
-            "{},{},{},{}",
+            "{},{},{},{},{}",
             self.color_count,
             self.mix_parts,
             self.parts_total,
-            u8::from(self.show_preview)
+            u8::from(self.show_preview),
+            u8::from(self.up_to)
         ))
     }
 }
@@ -392,11 +424,19 @@ impl Round {
 
     /// One candidate round, before the uniqueness rejection.
     fn draw(settings: &Settings, rng: &mut Rng) -> Self {
-        let mix_parts = settings.mix_parts;
-        let parts_total = settings.parts_total;
-
         let mut order: Vec<usize> = (0..PIGMENTS.len()).collect();
         rng.shuffle(&mut order);
+
+        // In up-to mode the ceilings are sampled, not obeyed: the deal may
+        // land on fewer colours and fewer parts than the setting allows.
+        let (mix_parts, parts_total) = if settings.up_to {
+            let colours = MIN_MIX + rng.below(settings.mix_parts - MIN_MIX + 1);
+            let parts = colours + rng.below(settings.parts_total - colours + 1);
+            (colours, parts)
+        } else {
+            (settings.mix_parts, settings.parts_total)
+        };
+
         let mut ingredients = order[..mix_parts].to_vec();
         ingredients.sort_unstable();
 
@@ -727,11 +767,12 @@ impl Game {
     /// A fresh game: clamped settings, a first round, nothing picked.
     #[must_use]
     pub fn new(settings: Settings, seed: u64) -> Self {
-        let settings = Settings::clamped(
+        let settings = Settings::clamped_up_to(
             settings.color_count,
             settings.mix_parts,
             settings.parts_total,
             settings.show_preview,
+            settings.up_to,
         );
         Self {
             round: Round::generate(&settings, seed),
@@ -861,6 +902,13 @@ impl Game {
             .zip(self.round.parts.iter().copied())
             .collect();
 
+        // In up-to mode the *composition* must match exactly — the target
+        // still has one true recipe — but the attempt may reach it with the
+        // same recipe only; fewer colours in the *attempt* than the target
+        // uses cannot equal it. What up-to relaxes is which recipes count as
+        // targets: the round was dealt with at-most numbers, so a deal that
+        // landed on 2 colours in 5 parts is the target, and the player may
+        // have been told only ceilings.
         let solved = played == target;
         let worth = if solved {
             Score::round_worth(self.round.revealed.len())
@@ -896,11 +944,12 @@ impl Game {
     /// Apply new settings, dealing a fresh round: a changed shape invalidates
     /// the round and the attempt both.
     pub fn apply_settings(&mut self, settings: Settings, seed: u64) {
-        let settings = Settings::clamped(
+        let settings = Settings::clamped_up_to(
             settings.color_count,
             settings.mix_parts,
             settings.parts_total,
             settings.show_preview,
+            settings.up_to,
         );
         self.settings = settings;
         self.next_round(seed);
@@ -936,10 +985,17 @@ impl Game {
     /// The words above the palette: what this round asks for.
     #[must_use]
     pub fn round_line(&self) -> String {
-        format!(
-            "Mix {} colours in {} parts",
-            self.settings.mix_parts, self.settings.parts_total
-        )
+        if self.settings.up_to {
+            format!(
+                "Mix up to {} colours in up to {} parts",
+                self.settings.mix_parts, self.settings.parts_total
+            )
+        } else {
+            format!(
+                "Mix {} colours in {} parts",
+                self.settings.mix_parts, self.settings.parts_total
+            )
+        }
     }
 
     /// The words for the score, as one line.
@@ -1367,6 +1423,81 @@ mod tests {
             matches!(game.check(), Some(Outcome::Solved(_))),
             "the true mix must solve whatever order it is picked in (dealt {dealt:?})"
         );
+    }
+
+    #[test]
+    fn two_colours_mix_at_equal_parts() {
+        // The ask that motivated it: half and half must be a legal,
+        // reachable split — 3+3 in a 6-part jar — and the checker accepts it
+        // when the target is that split, whatever order the colours were
+        // picked in.
+        let settings = Settings::clamped(6, 2, 6, false);
+        let mut game = Game::new(settings, 5);
+        let a = game.round.ingredients[0];
+        let b = game.round.ingredients[1];
+        game.toggle(b);
+        game.toggle(a);
+        for _ in 0..2 {
+            game.nudge(a, true);
+            game.nudge(b, true);
+        }
+        assert_eq!(game.assigned(), 6);
+        // Force the target to be the equal split, then solve.
+        game.round.parts = vec![3, 3];
+        let solved = game.check();
+        assert!(
+            matches!(solved, Some(Outcome::Solved(_))),
+            "3+3 of the two target colours must solve: {solved:?}"
+        );
+    }
+
+    #[test]
+    fn up_to_mode_deals_within_the_ceilings() {
+        let settings = Settings::clamped_up_to(8, 4, 10, false, true);
+        for seed in 0..64u64 {
+            let round = Round::generate(&settings, seed);
+            assert!(
+                round.ingredients.len() >= MIN_MIX,
+                "never below the hard floor of two colours"
+            );
+            assert!(
+                round.ingredients.len() <= settings.mix_parts,
+                "never above the colour ceiling"
+            );
+            let total: usize = round.parts.iter().sum();
+            assert!(
+                total <= settings.parts_total,
+                "never above the parts ceiling"
+            );
+            assert!(total >= round.ingredients.len());
+            // Variety: the ceilings are sampled, not pinned to one shape.
+            assert!(round.parts.iter().any(|&part| part >= 1));
+        }
+        // And across those deals, more than one colour count appeared.
+        let mut shapes = std::collections::BTreeSet::new();
+        for seed in 0..32u64 {
+            let round = Round::generate(&settings, 100 + seed);
+            shapes.insert(round.ingredients.len());
+        }
+        assert!(
+            shapes.len() > 1,
+            "up-to deals should vary in colour count, got {shapes:?}"
+        );
+    }
+
+    #[test]
+    fn up_to_mode_stores_and_clamps() {
+        let s = Settings::clamped_up_to(8, 3, 4, true, true);
+        assert_eq!(
+            s.parts_total, 4,
+            "a 3-colour mix may deal as few as 4 parts"
+        );
+        let stored = s.to_stored().expect("stores");
+        assert_eq!(stored, "8,3,4,1,1");
+        assert_eq!(Settings::from_stored(Some(&stored)), s);
+        // The old 4-field line still reads, with up-to off.
+        let old = Settings::from_stored(Some("8,3,9,0"));
+        assert!(!old.up_to);
     }
 
     #[test]
