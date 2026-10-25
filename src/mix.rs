@@ -389,6 +389,10 @@ pub struct Round {
     pub parts: Vec<usize>,
     /// Hints revealed so far, in reveal order.
     pub revealed: Vec<Hint>,
+    /// The parts this deal actually used. In up-to mode the settings are
+    /// only ceilings, so this can be below `parts_total` — and it, not the
+    /// ceiling, is what a complete attempt must fill.
+    pub parts_used: usize,
 }
 
 impl Round {
@@ -477,6 +481,7 @@ impl Round {
             ingredients,
             parts,
             revealed: Vec::new(),
+            parts_used: parts_total,
         }
     }
 
@@ -794,7 +799,7 @@ impl Game {
     /// parts — the only state a check may run in.
     #[must_use]
     pub fn attempt_is_complete(&self) -> bool {
-        self.assigned() == self.settings.parts_total
+        self.assigned() == self.round.parts_used
     }
 
     /// Toggle one pigment in or out of the attempt.
@@ -812,7 +817,7 @@ impl Game {
             .position(|entry| entry.pigment == pigment)
         {
             self.attempt.remove(at);
-        } else if self.attempt.len() < self.settings.parts_total {
+        } else if self.attempt.len() < self.round.parts_used {
             self.attempt.push(Entry { pigment, parts: 1 });
         }
     }
@@ -828,7 +833,7 @@ impl Game {
             .filter(|other| other.pigment != pigment)
             .map(|other| other.parts)
             .sum();
-        let ceiling = self.settings.parts_total.saturating_sub(others).max(1);
+        let ceiling = self.round.parts_used.saturating_sub(others).max(1);
         let Some(entry) = self
             .attempt
             .iter_mut()
@@ -964,12 +969,9 @@ impl Game {
             Some(Outcome::Solved(worth)) => format!("Solved — +{worth}"),
             Some(Outcome::Wrong) => "Not this mix. Adjust and check again.".to_string(),
             None => {
-                let missing = self.settings.parts_total - self.assigned();
+                let missing = self.round.parts_used - self.assigned();
                 if self.attempt.is_empty() {
-                    format!(
-                        "Pick colours and split {} parts.",
-                        self.settings.parts_total
-                    )
+                    format!("Pick colours and split {} parts.", self.round.parts_used)
                 } else if missing > 0 {
                     format!(
                         "{missing} more part{} to place.",
@@ -1448,6 +1450,50 @@ mod tests {
         assert!(
             matches!(solved, Some(Outcome::Solved(_))),
             "3+3 of the two target colours must solve: {solved:?}"
+        );
+    }
+
+    #[test]
+    fn an_up_to_round_dealt_below_the_ceiling_is_solvable() {
+        // The deadlock the first up-to cut shipped: the round used 5 parts
+        // but the game demanded the ceiling's 6 before enabling Check.
+        let settings = Settings::clamped_up_to(8, 3, 9, false, true);
+        let mut game = Game::new(settings, 11);
+        // Force a below-ceiling deal.
+        game.round.ingredients = game.round.ingredients[..2].to_vec();
+        game.round.parts = vec![3, 2];
+        game.round.parts_used = 5;
+        let plan: Vec<(usize, usize)> = game
+            .round
+            .ingredients
+            .iter()
+            .copied()
+            .zip(game.round.parts.iter().copied())
+            .collect();
+        for (pigment, parts) in plan {
+            game.toggle(pigment);
+            for _ in 1..parts {
+                game.nudge(pigment, true);
+            }
+        }
+        assert!(
+            game.attempt_is_complete(),
+            "five placed parts must complete a five-part round"
+        );
+        assert!(
+            matches!(game.check(), Some(Outcome::Solved(_))),
+            "the dealt recipe solves without over-filling"
+        );
+        // And the parts cannot be pumped past the dealt total.
+        let over = game.round.ingredients[0];
+        game.take_back(over);
+        game.toggle(over);
+        for _ in 0..9 {
+            game.nudge(over, true);
+        }
+        assert!(
+            game.assigned() <= game.round.parts_used,
+            "the jar holds only what the deal used"
         );
     }
 

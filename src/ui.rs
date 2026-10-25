@@ -318,7 +318,7 @@ fn parts_line(game: &Game) -> String {
         .collect();
     listed.sort();
     let placed = game.assigned();
-    let total = game.settings.parts_total;
+    let total = game.round.parts_used;
     let suffix = if placed == total {
         String::new()
     } else {
