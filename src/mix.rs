@@ -809,13 +809,12 @@ impl Game {
 
     /// Toggle one pigment in or out of the attempt.
     ///
-    /// The attempt is deliberately not capped at the target's shape — not
-    /// its colour count and not its part count. Adding a third colour to a
-    /// two-colour round, or a seventh part to a six-part jar, is how a
-    /// player finds out what overshooting does; the check reads it as wrong
-    /// rather than refusing to run. The one ceiling is the game's own jar
-    /// ([`MAX_PARTS`]), enforced here and in `nudge`. Deselecting drops the
-    /// entry and its parts.
+    /// The attempt is not capped — not at the target's colour count, not at
+    /// its part count, not at any other number. Adding a third colour to a
+    /// two-colour round, or a thirtieth part to a six-part jar, is exactly
+    /// how a player finds out what overshooting does; the check reads it as
+    /// wrong rather than ever refusing. The palette bounds the distinct
+    /// colours naturally, and deselecting drops the entry and its parts.
     pub fn toggle(&mut self, pigment: usize) {
         self.checked = None;
         self.outcome = None;
@@ -825,24 +824,18 @@ impl Game {
             .position(|entry| entry.pigment == pigment)
         {
             self.attempt.remove(at);
-        } else if self.attempt.len() < MAX_PARTS {
+        } else {
             self.attempt.push(Entry { pigment, parts: 1 });
         }
     }
 
-    /// Move one picked pigment's parts up or down by one, saturating at both
-    /// ends: at least one part while it stays picked, and never more than
-    /// what is left of the round's total once the other picks are paid.
+    /// Move one picked pigment's parts up or down by one. Upward is
+    /// unbounded — the player is exploring, not asking permission — and
+    /// downward saturates at one part, the floor of a colour that stays
+    /// picked.
     pub fn nudge(&mut self, pigment: usize, up: bool) {
         self.checked = None;
         self.outcome = None;
-        let others: usize = self
-            .attempt
-            .iter()
-            .filter(|other| other.pigment != pigment)
-            .map(|other| other.parts)
-            .sum();
-        let ceiling = MAX_PARTS.saturating_sub(others).max(1);
         let Some(entry) = self
             .attempt
             .iter_mut()
@@ -851,7 +844,7 @@ impl Game {
             return;
         };
         entry.parts = if up {
-            (entry.parts + 1).min(ceiling)
+            entry.parts.saturating_add(1)
         } else {
             (entry.parts - 1).max(1)
         };
@@ -1288,7 +1281,8 @@ mod tests {
         for _ in 0..99 {
             game.nudge(a, true);
         }
-        assert_eq!(game.assigned(), MAX_PARTS, "never above the game's jar");
+        // Ninety-nine nudges land at one hundred parts: the jar is unbounded.
+        assert_eq!(game.assigned(), 100, "nudging up never stops");
         for _ in 0..99 {
             game.nudge(a, false);
         }
