@@ -563,6 +563,31 @@ pub fn hex(rgb: [u8; 3]) -> String {
     format!("#{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2])
 }
 
+/// Readable text colour on `rgb`: black or white, by relative luminance.
+///
+/// The picks strip writes each colour's share count *on* the colour, so the
+/// domain owns the contrast decision — WCAG's relative-luminance formula,
+/// the 4.5:1 bar for small text, white when dark text would fall short.
+#[must_use]
+pub fn text_on(rgb: [u8; 3]) -> &'static str {
+    let channel = |value: u8| -> f64 {
+        let value = f64::from(value) / 255.0;
+        if value <= 0.039_28 {
+            value / 12.92
+        } else {
+            ((value + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    let luminance =
+        0.212_6 * channel(rgb[0]) + 0.715_2 * channel(rgb[1]) + 0.072_2 * channel(rgb[2]);
+    // Contrast of black text is (L + 0.05) / 0.05; of white, 1.05 / (L + 0.05).
+    if luminance > 0.183_3 {
+        "#000000"
+    } else {
+        "#ffffff"
+    }
+}
+
 /// Whether the target's channels all lie within the min–max span of `combo`.
 fn hull_contains(combo: &[usize], target: [u8; 3]) -> bool {
     target.iter().enumerate().all(|(channel, &wanted)| {
@@ -1313,6 +1338,24 @@ mod tests {
             matches!(game.check(), Some(Outcome::Solved(_))),
             "the true mix must solve whatever order it is picked in (dealt {dealt:?})"
         );
+    }
+
+    #[test]
+    fn readable_text_colour_sits_on_the_chips() {
+        // The palette's own extremes: white takes black text, black takes
+        // white, and the lightest and darkest pigments follow them.
+        assert_eq!(text_on([255, 255, 255]), "#000000");
+        assert_eq!(text_on([26, 26, 26]), "#ffffff");
+        assert_eq!(text_on(PIGMENTS[14].rgb), "#000000"); // Peach
+        assert_eq!(text_on(PIGMENTS[10].rgb), "#ffffff"); // Navy
+                                                          // And everything in between gets whichever side clears 4.5:1.
+        for pigment in PIGMENTS {
+            let on = text_on(pigment.rgb);
+            assert!(
+                on == "#000000" || on == "#ffffff",
+                "text_on must answer one of the two text colours: {pigment:?}"
+            );
+        }
     }
 
     #[test]

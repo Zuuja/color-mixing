@@ -11,7 +11,6 @@
 //! runs the app.
 
 use std::cell::{Cell, RefCell};
-use std::fmt::Write as _;
 use std::rc::Rc;
 
 use wasm_bindgen::prelude::*;
@@ -202,6 +201,8 @@ fn render(document: &Document, state: &Shared) {
 
     // The hints the round has given away, one line each.
     set_text(document, "hints", &game.round.hint_lines().join("  ·  "));
+    // And how the parts divide right now, under the strip.
+    set_text(document, "parts-line", &parts_line(game));
 
     render_picks(document, game);
     render_palette(document, game);
@@ -235,74 +236,101 @@ fn render_picks(document: &Document, game: &Game) {
         return;
     };
 
-    let signature: String = game.attempt.iter().fold(String::new(), |mut line, entry| {
-        let _ = write!(line, "{}:{},", entry.pigment, entry.parts);
-        line
-    });
+    let signature: String = game
+        .attempt
+        .iter()
+        .map(|entry| entry.pigment.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
     let seen = LAST_PICKS.with(|last| last.borrow().clone());
     if seen != signature {
         LAST_PICKS.with(|last| last.borrow_mut().clone_from(&signature));
         clear(&host);
         for entry in &game.attempt {
             let pigment = &mix::PIGMENTS[entry.pigment];
-            let Some(row) = node(document, "div", "pick") else {
+            // The chip itself removes the colour: one big, colour-identified
+            // tap target, no separate destroy button to hunt for.
+            let Some(chip) = chip(document, entry.pigment) else {
                 return;
             };
-            let Some(dot) = span(document, "dot") else {
+            let Some(share) = span(document, "share") else {
                 return;
             };
-            set_style(&dot, "background", &mix::hex(pigment.rgb));
-            let Some(name) = span(document, "name") else {
+            share.set_text_content(Some(&entry.parts.to_string()));
+            set_style(&share, "color", mix::text_on(pigment.rgb));
+            let Some(cross) = span(document, "cross") else {
                 return;
             };
-            name.set_text_content(Some(pigment.name));
-            let _ = row.append_child(&dot);
-            let _ = row.append_child(&name);
-            // The stepper: one button each way, the count after them.
-            for (label, up) in [("−", false), ("+", true)] {
-                let Some(step) = stepper(document, entry.pigment, up) else {
-                    return;
-                };
-                step.set_text_content(Some(label));
-                let _ = row.append_child(&step);
-            }
-            let Some(count) = span(document, "parts") else {
-                return;
-            };
-            count.set_text_content(Some(&parts_text(entry.parts, game.settings.parts_total)));
-            let _ = row.append_child(&count);
-            let _ = host.append_child(&row);
+            cross.set_text_content(Some("\u{00d7}"));
+            set_style(&cross, "color", mix::text_on(pigment.rgb));
+            let _ = chip.append_child(&share);
+            let _ = chip.append_child(&cross);
+            let _ = host.append_child(&chip);
         }
         return;
     }
 
-    // Same rows, new counts: rewrite only the numbers.
-    let rows = host.children();
-    for index in 0..rows.length() {
-        let (Some(row), Some(entry)) = (rows.item(index), game.attempt.get(index as usize)) else {
+    // Same chips, new counts: rewrite only the numbers.
+    let chips = host.children();
+    for index in 0..chips.length() {
+        let (Some(chip), Some(entry)) = (chips.item(index), game.attempt.get(index as usize))
+        else {
             continue;
         };
-        let counts = row.children();
-        // The row is dot, name, down, up, parts — the count is the last.
-        let Some(parts) = counts.item(counts.length().saturating_sub(1)) else {
+        let Some(pigment) = chip
+            .get_attribute("data-id")
+            .and_then(|text| text.parse::<usize>().ok())
+            .map(|id| &mix::PIGMENTS[id])
+        else {
             continue;
         };
-        parts.set_text_content(Some(&parts_text(entry.parts, game.settings.parts_total)));
+        let parts = chip.children();
+        // The chip is share then cross; the count is the first.
+        let Some(share) = parts.item(0) else {
+            continue;
+        };
+        share.set_text_content(Some(&entry.parts.to_string()));
+        let typed: Option<HtmlElement> = share.dyn_into().ok();
+        if let Some(share) = typed {
+            set_style(&share, "color", mix::text_on(pigment.rgb));
+        }
     }
 }
 
-/// The parts readout inside one pick row.
-fn parts_text(parts: usize, total: usize) -> String {
-    format!("{parts} of {total}")
+/// One pick chip: a button carrying the pigment id, filled with the colour.
+fn chip(document: &Document, pigment: usize) -> Option<HtmlButtonElement> {
+    let button: HtmlButtonElement = node(document, "button", "pick")?.dyn_into().ok()?;
+    let _ = button.set_attribute("type", "button");
+    let _ = button.set_attribute("data-id", &pigment.to_string());
+    set_style(&button, "background", &mix::hex(mix::PIGMENTS[pigment].rgb));
+    Some(button)
 }
 
-/// One stepper button: which pigment, which way.
-fn stepper(document: &Document, pigment: usize, up: bool) -> Option<HtmlButtonElement> {
-    let button: HtmlButtonElement = node(document, "button", "step")?.dyn_into().ok()?;
-    let _ = button.set_attribute("type", "button");
-    let _ = button.set_attribute("data-step", if up { "up" } else { "down" });
-    let _ = button.set_attribute("data-id", &pigment.to_string());
-    Some(button)
+/// The words under the strip: how the parts divide right now.
+fn parts_line(game: &Game) -> String {
+    if game.attempt.is_empty() {
+        return String::new();
+    }
+    let mut listed: Vec<String> = game
+        .attempt
+        .iter()
+        .map(|entry| format!("{} {}", entry.parts, mix::PIGMENTS[entry.pigment].name))
+        .collect();
+    listed.sort();
+    let placed = game.assigned();
+    let total = game.settings.parts_total;
+    let suffix = if placed == total {
+        String::new()
+    } else {
+        format!(" — {} more to place", total - placed)
+    };
+    format!(
+        "{} of {} parts: {}{}",
+        placed,
+        total,
+        listed.join(", "),
+        suffix
+    )
 }
 
 /// The palette: one button per swatch the round offers.
@@ -359,14 +387,29 @@ fn render_palette(document: &Document, game: &Game) {
         else {
             continue;
         };
-        let picked = game.attempt.iter().any(|entry| entry.pigment == id);
+        let picked = game.attempt.iter().find(|entry| entry.pigment == id);
         let hinted = game
             .round
             .revealed
             .iter()
             .any(|hint| matches!(hint, mix::Hint::Ingredient(ingredient) if *ingredient == id));
-        let _ = node.set_attribute("data-picked", if picked { "true" } else { "false" });
+        let _ = node.set_attribute(
+            "data-picked",
+            if picked.is_some() { "true" } else { "false" },
+        );
         let _ = node.set_attribute("data-hinted", if hinted { "true" } else { "false" });
+        // The picked swatch carries its part count as a badge, so the share
+        // is visible where the player taps to add more.
+        if let Some(old_badge) = node.children().item(2) {
+            let _ = node.remove_child(&old_badge);
+        }
+        if let Some(entry) = picked {
+            let Some(badge) = span(document, "badge") else {
+                return;
+            };
+            badge.set_text_content(Some(&entry.parts.to_string()));
+            let _ = node.append_child(&badge);
+        }
     }
 }
 
@@ -446,21 +489,32 @@ fn bind(window: &Window, document: &Document, state: &Shared) {
         let state = Rc::clone(state);
         move |target| {
             if let Some(id) = data_id(&target) {
-                state.borrow_mut().game.toggle(id);
+                let mut state_ref = state.borrow_mut();
+                if state_ref
+                    .game
+                    .attempt
+                    .iter()
+                    .any(|entry| entry.pigment == id)
+                {
+                    // Already picked: give it one more part, while parts remain.
+                    state_ref.game.nudge(id, true);
+                } else {
+                    state_ref.game.toggle(id);
+                }
+                drop(state_ref);
                 render(&document, &state);
-                // No storage: the attempt is not worth a write.
             }
         }
     });
 
-    // Picks: a stepper nudges the pigment's parts.
+    // Picks: tapping a chip removes that colour from the attempt. Parts are
+    // adjusted from the palette chips (below), which are always visible.
     on_click(&document, "picks", {
         let document = Rc::clone(&document);
         let state = Rc::clone(state);
         move |target| {
             if let Some(id) = data_id(&target) {
-                let up = target.get_attribute("data-step").as_deref() == Some("up");
-                state.borrow_mut().game.nudge(id, up);
+                state.borrow_mut().game.toggle(id);
                 render(&document, &state);
             }
         }
