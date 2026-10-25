@@ -507,14 +507,14 @@ fn bind(window: &Window, document: &Document, state: &Shared) {
         }
     });
 
-    // Picks: tapping a chip removes that colour from the attempt. Parts are
-    // adjusted from the palette chips (below), which are always visible.
+    // Picks: tapping a chip takes one part back. At one part the colour
+    // leaves with it — one tap, one unit, never the whole colour at once.
     on_click(&document, "picks", {
         let document = Rc::clone(&document);
         let state = Rc::clone(state);
         move |target| {
             if let Some(id) = data_id(&target) {
-                state.borrow_mut().game.toggle(id);
+                state.borrow_mut().game.take_back(id);
                 render(&document, &state);
             }
         }

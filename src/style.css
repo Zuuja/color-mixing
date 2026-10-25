@@ -176,8 +176,8 @@ h1 {
   line-height: 1;
 }
 
-/* The remove mark, beside the count. The whole chip is the remove button;
-   the cross is the visible reason to believe it. */
+/* The take-back mark, beside the count: the chip gives a part back per
+   tap, and the cross says which way the number moves. */
 #picks .cross {
   font-size: .95rem;
   font-weight: 700;

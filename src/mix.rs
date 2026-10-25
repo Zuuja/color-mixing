@@ -801,6 +801,28 @@ impl Game {
         };
     }
 
+    /// The tap on a picked colour's chip: one part comes back.
+    ///
+    /// At one part the colour leaves with its last unit — a chip that
+    /// stopped responding at one part would read as broken, and an empty
+    /// entry would be a colour in the mix with nothing of it in the jar.
+    /// Not-picked colours are untouched; the palette handles adding.
+    pub fn take_back(&mut self, pigment: usize) {
+        let Some(at) = self
+            .attempt
+            .iter()
+            .position(|entry| entry.pigment == pigment)
+        else {
+            return;
+        };
+        self.checked = None;
+        if self.attempt[at].parts == 1 {
+            self.attempt.remove(at);
+        } else {
+            self.attempt[at].parts -= 1;
+        }
+    }
+
     /// The colour the attempt currently mixes to, or `None` while it is
     /// empty.
     #[must_use]
@@ -1338,6 +1360,40 @@ mod tests {
             matches!(game.check(), Some(Outcome::Solved(_))),
             "the true mix must solve whatever order it is picked in (dealt {dealt:?})"
         );
+    }
+
+    #[test]
+    fn a_chip_tap_takes_one_part_back_at_a_time() {
+        let mut game = Game::new(Settings::clamped(6, 2, 6, false), 5);
+        let a = game.round.ingredients[0];
+        game.toggle(a);
+        for _ in 0..3 {
+            game.nudge(a, true);
+        }
+        assert_eq!(game.assigned(), 4);
+        // Three taps, three parts back.
+        game.take_back(a);
+        game.take_back(a);
+        game.take_back(a);
+        assert_eq!(game.assigned(), 1);
+        assert_eq!(game.attempt.len(), 1, "still picked at one part");
+        // And the last tap un-picks the colour entirely.
+        game.take_back(a);
+        assert!(game.attempt.is_empty());
+        // Tapping a colour that is not picked does nothing.
+        game.take_back(game.round.palette[0]);
+        assert!(game.attempt.is_empty());
+        // A tap also re-hides a checked mix, like every other change.
+        game.toggle(a);
+        game.nudge(a, true);
+        game.toggle(game.round.ingredients[1]);
+        for _ in 0..game.settings.parts_total - 2 {
+            game.nudge(game.round.ingredients[1], true);
+        }
+        game.check();
+        assert!(game.checked.is_some());
+        game.take_back(a);
+        assert!(game.checked.is_none(), "a take-back invalidates the check");
     }
 
     #[test]
