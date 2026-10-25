@@ -616,11 +616,23 @@ fn apply_settings_from_controls(window: &Window, document: &Document, state: &Sh
         preview,
         up_to,
     );
-    {
+    // Only the three numbers change the round's shape. A settings change
+    // that did not touch them must not deal a fresh round — the player's
+    // attempt is not the settings panel's to throw away.
+    let current_triple = (current.color_count, current.mix_parts, current.parts_total);
+    let next_triple = (
+        settings.color_count,
+        settings.mix_parts,
+        settings.parts_total,
+    );
+    if current_triple != next_triple {
         let mut state_ref = state.borrow_mut();
         state_ref.seed = state_ref.seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
         let seed = state_ref.seed;
         state_ref.game.apply_settings(settings, seed);
+    } else {
+        // Same shape: apply in place, keeping round and attempt.
+        state.borrow_mut().game.settings = settings;
     }
     store_settings(window, &state.borrow().game.settings);
     render(document, state);

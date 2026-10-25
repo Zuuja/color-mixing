@@ -260,7 +260,15 @@ impl Settings {
     /// a player who never changed anything writes nothing at all.
     #[must_use]
     pub fn to_stored(&self) -> Option<String> {
-        if *self == Self::new() {
+        // The defaults (including both flags off) write nothing, so a player
+        // who never touched the panel leaves no trace.
+        let default = Self::new();
+        if self.color_count == default.color_count
+            && self.mix_parts == default.mix_parts
+            && self.parts_total == default.parts_total
+            && !self.show_preview
+            && !self.up_to
+        {
             return None;
         }
         Some(format!(
