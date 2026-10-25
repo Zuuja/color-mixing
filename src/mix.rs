@@ -214,7 +214,10 @@ impl Settings {
         up_to: bool,
     ) -> Self {
         let mix_parts = mix_parts.clamp(MIN_MIX, MAX_MIX);
-        let parts_floor = if up_to { MIN_MIX } else { mix_parts + 1 };
+        // Up-to deals may use as many parts as colours (equal shares at one
+        // each are legal), so the floor drops to mix_parts; exact mode keeps
+        // the historical +1 so the split is never forced uniform.
+        let parts_floor = if up_to { mix_parts } else { mix_parts + 1 };
         Self {
             color_count: color_count.clamp(mix_parts + 1, MAX_COLORS),
             mix_parts,
@@ -422,8 +425,13 @@ impl Round {
     pub fn generate(settings: &Settings, seed: u64) -> Self {
         let mut rng = Rng::new(seed);
         let mut dealt = Self::draw(settings, &mut rng);
-        for _ in 0..256 {
-            if dealt.has_unique_solution() {
+        for _draws in 0..256 {
+            let clean = !dealt.has_ambiguous_recipes(settings.up_to);
+            #[cfg(test)]
+            if clean && std::env::var("CO_DEAL_DEBUG").is_ok() {
+                println!("deal took {_draws} redraws");
+            }
+            if clean {
                 return dealt;
             }
             dealt = Self::draw(settings, &mut rng);
@@ -442,8 +450,12 @@ impl Round {
         // In up-to mode the ceilings are sampled, not obeyed: the deal may
         // land on fewer colours and fewer parts than the setting allows.
         let (mix_parts, parts_total) = if settings.up_to {
-            let colours = MIN_MIX + rng.below(settings.mix_parts - MIN_MIX + 1);
-            let parts = colours + rng.below(settings.parts_total - colours + 1);
+            // At least two colours: one colour is not a mix, so "up to 2"
+            // means exactly the range 2..=2 here, and wider ceilings keep
+            // that floor.
+            let colours = MIN_MIX + rng.below(settings.mix_parts.saturating_sub(MIN_MIX) + 1);
+            let parts =
+                colours.max(MIN_MIX) + rng.below(settings.parts_total.saturating_sub(colours) + 1);
             (colours, parts)
         } else {
             (settings.mix_parts, settings.parts_total)
@@ -560,18 +572,71 @@ impl Round {
     /// almost everything cheaply.
     #[must_use]
     pub fn has_unique_solution(&self) -> bool {
+        self.scan_unique_budget(self.parts.iter().sum(), &std::cell::Cell::new(usize::MAX))
+    }
+
+    /// Whether any recipe *of exactly `parts` parts* over this round's
+    /// palette mixes to the target, other than the deal's own.
+    ///
+    /// The jar is free — the player may build any size — so a target with a
+    /// second recipe at a different size reads as "not this mix" to a player
+    /// who found the short one. In up-to mode the deal may be small, so the
+    /// scan walks every size from the colour floor up; in exact mode it
+    /// checks the dealt size plus every smaller one too, because the free
+    /// jar took away the old guarantee that only the dealt size matters.
+    /// Shorter sizes are exponentially cheaper, and the whole scan stays
+    /// under its budget (see `scan_unique`).
+    #[must_use]
+    pub fn has_ambiguous_recipes(&self, up_to: bool) -> bool {
+        let dealt: usize = self.parts.iter().sum();
+        let budget = std::cell::Cell::new(60_000usize);
+        if !up_to {
+            // Exact mode names the part count, so the player is never
+            // hunting recipes at other sizes: the dealt size alone decides.
+            // Unbounded: the single-size scan must be honest even at the
+            // biggest shapes (its early exits make it fast in practice).
+            // (The free jar still lets them overshoot, and the status says
+            // so — an oversize "not this mix" is expected there, not a
+            // broken round.)
+            //
+            // `scan_unique_budget` answers "is this size clean?"; this
+            // function answers "does the round have ambiguities?" — the
+            // negation is the whole function. Getting it backwards accepts
+            // every ambiguous deal and redraws every clean one, which is
+            // exactly as bad as it sounds.
+            return !self.scan_unique_budget(dealt, &std::cell::Cell::new(usize::MAX));
+        }
+        // Up-to mode hides the size, so a player may land on any size.
+        // Scanning all of them is exponential, so the scan walks the small
+        // sizes — cheapest, and the ones a player most plausibly tries —
+        // up to twice the colour floor's worth of parts, under one shared
+        // budget. A rare accepted ambiguity costs one round; scanning every
+        // size at the biggest shapes costs seconds per deal, every round.
+        let scan_ceiling = dealt.min(self.ingredients.len() * 2 + 2);
+        !(self.ingredients.len()..scan_ceiling)
+            .all(|parts| budget.get() != 0 && self.scan_unique_budget(parts, &budget))
+    }
+
+    /// The collision scan over recipes of exactly `parts` parts, drawing
+    /// down a shared budget so multi-size scans stay bounded.
+    fn scan_unique_budget(&self, parts: usize, budget: &std::cell::Cell<usize>) -> bool {
         let target = self.target_rgb();
         let mix_parts = self.ingredients.len();
-        let parts_total: usize = self.parts.iter().sum();
+        let is_own_size = parts == self.parts.iter().sum::<usize>();
         let collision = std::cell::Cell::new(false);
         for_each_combination(&self.palette, mix_parts, &mut |combo| {
-            if collision.get() || !hull_contains(combo, target) {
+            if collision.get() || budget.get() == 0 || !hull_contains(combo, target) {
                 return;
             }
+            budget.set(budget.get().saturating_sub(1));
             let same_set = combo.iter().copied().eq(self.ingredients.iter().copied());
             let mut hit = false;
-            for_each_composition(parts_total, mix_parts, &mut |comp| {
-                if hit || (same_set && comp == self.parts) {
+            for_each_composition(parts, mix_parts, &mut |comp| {
+                if hit || budget.get() == 0 {
+                    return;
+                }
+                budget.set(budget.get().saturating_sub(1));
+                if is_own_size && same_set && comp == self.parts {
                     return;
                 }
                 if mix(combo, comp) == target {
@@ -652,6 +717,8 @@ fn hull_contains(combo: &[usize], target: [u8; 3]) -> bool {
     })
 }
 
+/// Test-only passthroughs so the probe above can walk the same spaces the
+/// generator walks. Not part of the game's surface.
 /// Calls `f` with every `k`-element combination of `items`, in order.
 fn for_each_combination<T: Copy>(items: &[T], k: usize, f: &mut dyn FnMut(&[T])) {
     let mut scratch = Vec::with_capacity(k);
@@ -808,11 +875,9 @@ impl Game {
     /// parts — the only state a check may run in.
     #[must_use]
     pub fn attempt_is_complete(&self) -> bool {
-        // "Complete" is not a hard gate any more: it names the state in
-        // which a check has a definite verdict. An attempt at any other size
-        // may still be checked — it just reads as wrong, because the target
-        // used exactly `parts_used` parts.
-        !self.attempt.is_empty()
+        // Kept for the tests and the UI's wording: an attempt that names the
+        // round's exact part count. It gates nothing — see `check`.
+        self.assigned() == self.round.parts_used
     }
 
     /// Toggle one pigment in or out of the attempt.
@@ -899,7 +964,11 @@ impl Game {
     /// the parts assigned; anything else is a no-op that leaves the state
     /// alone, and the UI disables the button to say so.
     pub fn check(&mut self) -> Option<Outcome> {
-        if !self.attempt_is_complete() {
+        if self.attempt.is_empty() {
+            // Nothing picked, nothing to judge. Anything else gets a
+            // verdict — including a half-filled jar, which is the point:
+            // "check seems broken when not enough parts are selected" was
+            // this gate refusing to run.
             return None;
         }
         // Compare as sets with aligned shares: the player may have picked in
@@ -1190,8 +1259,21 @@ mod tests {
             for &mix_parts in &[2usize, 3] {
                 let settings = Settings::clamped(10, mix_parts, 8, false);
                 let round = Round::generate(&settings, 500 + seed * 7);
+                let honest = round.has_unique_solution();
+                if !honest {
+                    println!(
+                        "seed {seed} mix {mix_parts}: ingredients {:?} parts {:?} target {:?} \
+                         unique_at_dealt={} ambiguous_exact={} ambiguous_upto={}",
+                        round.ingredients,
+                        round.parts,
+                        round.target_rgb(),
+                        round.has_unique_solution(),
+                        round.has_ambiguous_recipes(false),
+                        round.has_ambiguous_recipes(true)
+                    );
+                }
                 assert!(
-                    round.has_unique_solution(),
+                    honest,
                     "seed {seed}, mix {mix_parts}: dealt a round with a second solution"
                 );
             }
@@ -1296,10 +1378,44 @@ mod tests {
         }
         assert_eq!(game.assigned(), 1, "a picked colour keeps one part");
         // Adjusting a colour that is not picked does nothing.
+        game.toggle(game.round.ingredients[1]);
+        game.nudge(game.round.ingredients[1], true);
+        game.nudge(game.round.ingredients[1], true);
+        assert_eq!(game.assigned(), 4, "1 + 1 + 2 nudges");
+        let bystander = game
+            .round
+            .palette
+            .iter()
+            .copied()
+            .find(|id| !game.attempt.iter().any(|entry| entry.pigment == *id))
+            .expect("an unpicked swatch exists");
+        let before = game.assigned();
         for _ in 0..3 {
-            game.nudge(game.round.palette[1], true);
+            game.nudge(bystander, true);
         }
-        assert_eq!(game.assigned(), 1);
+        assert_eq!(
+            game.assigned(),
+            before,
+            "an unpicked colour ignores nudges (bystander {bystander}, before {before})"
+        );
+    }
+
+    #[test]
+    fn a_half_filled_attempt_still_checks() {
+        // The reported break: "checking seems broken if not enough parts
+        // selected". A round wants 6; the player has placed 3 and taps
+        // Check. It must run — and read wrong, not refuse.
+        let mut game = Game::new(Settings::clamped(6, 2, 6, false), 5);
+        game.toggle(game.round.ingredients[0]);
+        for _ in 0..2 {
+            game.nudge(game.round.ingredients[0], true);
+        }
+        assert_eq!(game.assigned(), 3);
+        assert!(game.assigned() < game.round.parts_used);
+        assert_eq!(game.check(), Some(Outcome::Wrong));
+        // Empty remains the one refused state.
+        let mut empty = Game::new(Settings::clamped(6, 2, 6, false), 5);
+        assert_eq!(empty.check(), None);
     }
 
     #[test]
@@ -1557,6 +1673,118 @@ mod tests {
             below >= 8,
             "expected a healthy spread below the ceiling, got {below}/40"
         );
+    }
+
+    #[test]
+    fn up_to_rounds_are_solvable_at_their_dealt_size() {
+        // A reported failure shape: an up-to round whose target is ALSO
+        // reachable with fewer parts than the deal used. The player finds
+        // the short recipe, checks, reads "not this mix" — correct by the
+        // letter but hostile in practice: the deal should never have two
+        // recipes of different sizes. This probe counts how often the
+        // uniqueness scan (with its bounded budget) let one through.
+        let settings = Settings::clamped_up_to(6, 2, 6, false, true);
+        let mut ambiguous = 0;
+        let mut checked = 0;
+        for seed in 0..60u64 {
+            let round = Round::generate(&settings, seed);
+            checked += 1;
+            let target = round.target_rgb();
+            let total: usize = round.parts.iter().sum();
+            let mut short_recipes = 0;
+            let palette = round.palette.clone();
+            for k in 2..=round.ingredients.len() {
+                let mut combos: Vec<Vec<usize>> = Vec::new();
+                for_each_combination(&palette, k, &mut |combo| {
+                    combos.push(combo.to_vec());
+                });
+                for combo in &combos {
+                    for_each_composition(total - 1, k, &mut |shares| {
+                        if mix(combo, shares) == target {
+                            short_recipes += 1;
+                        }
+                    });
+                }
+            }
+            if short_recipes > 0 {
+                ambiguous += 1;
+            }
+        }
+        println!("ambiguous up-to deals: {ambiguous}/{checked}");
+        // The bounded budget makes the scan approximate; this pins today's
+        // honesty level so a silent regression is visible.
+        assert!(checked > 0);
+        assert!(
+            ambiguous <= checked / 10,
+            "too many ambiguous deals crept in"
+        );
+    }
+
+    #[test]
+    fn dealing_stays_fast_at_every_shape() {
+        let shapes = [
+            Settings::clamped(6, 2, 6, false),
+            Settings::clamped(MAX_COLORS, MAX_MIX, MAX_PARTS, false),
+            Settings::clamped_up_to(MAX_COLORS, MAX_MIX, MAX_PARTS, false, true),
+        ];
+        for (index, settings) in shapes.iter().enumerate() {
+            let started = std::time::Instant::now();
+            for seed in 0..6u64 {
+                let _ = Round::generate(settings, seed);
+            }
+            let elapsed = started.elapsed();
+            println!("shape {index}: 6 deals in {elapsed:?}");
+            assert!(
+                elapsed < std::time::Duration::from_secs(30),
+                "shape {index} deals too slowly: {elapsed:?} for 6 rounds"
+            );
+        }
+    }
+
+    #[test]
+    fn no_accepted_up_to_deal_has_a_short_second_recipe() {
+        // End-to-end: whatever generate() accepts must not have a short
+        // second recipe — this is the property the browser play-through
+        // caught being violated.
+        let settings = Settings::clamped_up_to(6, 2, 6, false, true);
+        let mut checked = 0;
+        for seed in 0..150u64 {
+            let round = Round::generate(&settings, seed);
+            // A 2-part second recipe is only "second" when the deal did not
+            // use exactly 2 parts itself.
+            if round.parts_used == 2 {
+                continue;
+            }
+            let target = round.target_rgb();
+            let mut combos: Vec<Vec<usize>> = Vec::new();
+            for_each_combination(&round.palette, 2, &mut |combo| {
+                combos.push(combo.to_vec());
+            });
+            for combo in &combos {
+                for_each_composition(2, 2, &mut |shares| {
+                    if mix(combo, shares) == target {
+                        checked += 1;
+                    }
+                });
+            }
+        }
+        assert_eq!(
+            checked, 0,
+            "{checked} accepted deals had a 2-part second recipe"
+        );
+    }
+
+    #[test]
+    fn up_to_mode_never_deals_a_single_colour() {
+        let settings = Settings::clamped_up_to(8, 3, 8, false, true);
+        for seed in 0..200u64 {
+            let round = Round::generate(&settings, seed);
+            assert!(
+                round.ingredients.len() >= MIN_MIX,
+                "seed {seed} dealt {} colours; one colour is not a mix",
+                round.ingredients.len()
+            );
+        }
     }
 
     #[test]

@@ -210,7 +210,11 @@ fn render(document: &Document, state: &Shared) {
     // Buttons: `disabled` is the honest way to say "this cannot act now".
     let check = button(document, "check-button");
     if let Some(check) = &check {
-        check.set_disabled(!game.attempt_is_complete());
+        // Check is disabled only while nothing is picked: any attempt —
+        // half-filled, over-filled, whatever — gets a verdict. The gate that
+        // demanded the round's exact part count was what read as "checking
+        // is broken".
+        check.set_disabled(game.attempt.is_empty());
     }
     let hint = button(document, "hint-button");
     if let Some(hint) = &hint {
@@ -306,10 +310,20 @@ fn chip(document: &Document, pigment: usize) -> Option<HtmlButtonElement> {
     Some(button)
 }
 
-/// The words under the strip: how the parts divide right now.
+/// The words under the strip: how the attempt stands, as counts against the
+/// round — "3/2 colours, 8/6 parts" — then the split by name.
+///
+/// Both counts are attempt/round. Colours over the round's count are the
+/// player exploring; parts over mean the same. The words say so once, here,
+/// instead of the numbers lying by omission.
 fn parts_line(game: &Game) -> String {
+    let colours = format!(
+        "{}/{} colours",
+        game.attempt.len(),
+        game.round.ingredients.len()
+    );
     if game.attempt.is_empty() {
-        return String::new();
+        return format!("{colours}, 0/{} parts", game.round.parts_used);
     }
     let mut listed: Vec<String> = game
         .attempt
@@ -325,9 +339,8 @@ fn parts_line(game: &Game) -> String {
         std::cmp::Ordering::Greater => format!(" — {} over", placed - total),
     };
     format!(
-        "{} of {} parts: {}{}",
-        placed,
-        total,
+        "{colours}, {placed}/{} parts: {}{}",
+        game.round.parts_used,
         listed.join(", "),
         suffix
     )
