@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Two theme colours, one per scheme, and no single one that has to guess.
+     An installed app's status bar is painted from these, so one hardcoded value
+     would put a dark bar on a light page (or the reverse) until the user changed
+     their phone. The manifest deliberately carries no `theme_color` for the same
+     reason: an installed app's chrome cannot express a scheme variant, so it
+     would override both of these. -->
+<meta name="theme-color" content="#f5f6f8" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0f1117" media="(prefers-color-scheme: dark)">
+<meta name="description" content="Practice mixing colours: pick the swatches and the proportions that make the target colour.">
+<title>Colour Mix</title>
+<link rel="manifest" href="./manifest.webmanifest">
+<!-- The SVG is the icon: it is the committed source of truth, and the browser
+     scales it. The PNGs beside it are rasterized from this same file at build
+     time, for the manifest and for iOS. -->
+<link rel="icon" href="./icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="./icon-192.png">
+<link rel="stylesheet" href="./style.css">
+</head>
+<body>
+<main>
+  <!-- The round's ask, the target swatch and the player's mix. Rust owns
+       every text from the first frame, so there is no "loading" state to
+       flash. -->
+  <header>
+    <h1 id="round-line">Colour Mix</h1>
+    <p id="score-line" role="status" aria-live="polite">No rounds yet.</p>
+  </header>
+  <section id="board" aria-label="Target and your mix">
+    <div class="cup">
+      <span class="cup-label" id="target-label">Target</span>
+      <span class="swatch" id="target-swatch" aria-hidden="true"></span>
+    </div>
+    <div class="cup">
+      <span class="cup-label" id="yours-label">Your mix</span>
+      <span class="swatch" id="attempt-swatch" aria-hidden="true"></span>
+      <span class="cup-note" id="attempt-note">hidden until you check</span>
+    </div>
+  </section>
+  <p id="status" role="status" aria-live="polite"></p>
+  <!-- The picked colours, one strip, tap to remove. -->
+  <section id="picks" aria-label="Your picked colours, tap one to take a part back"></section>
+  <p id="parts-line" role="status"></p>
+  <!-- The palette: one button per swatch the round offers. -->
+  <section id="palette" aria-label="Swatches"></section>
+  <p id="hints"></p>
+  <section id="controls">
+    <button id="hint-button" type="button">Hint</button>
+    <button id="check-button" type="button">Check</button>
+    <button id="next-button" type="button">Skip</button>
+  </section>
+  <!-- Settings: the round's shape and the preview rule. -->
+  <section id="settings" aria-label="Settings">
+    <label for="color-count">Swatches to choose from</label>
+    <select id="color-count"></select>
+    <label for="mix-parts">Colours in the mix</label>
+    <select id="mix-parts"></select>
+    <label for="parts-total">Parts to split</label>
+    <select id="parts-total"></select>
+    <span class="check-row">
+      <input type="checkbox" id="show-preview">
+      <label for="show-preview">Show my mix while building it</label>
+    </span>
+    <span class="check-row">
+      <input type="checkbox" id="up-to">
+      <label for="up-to">The numbers are ceilings, not exact amounts</label>
+    </span>
+    <span class="check-row" id="hide-numbers-row">
+      <input type="checkbox" id="hide-numbers">
+      <label for="hide-numbers">Hide the dealt size — judge by eye</label>
+    </span>
+  </section>
+  <p id="error" role="alert" hidden></p>
+</main>
+<noscript>This game needs JavaScript enabled. Turn it on and reload to play.</noscript>
+<!-- The one script in the document: it hands over to the generated bindings and
+     does nothing else. No state, no rendering, no event handling — everything
+     below the import is the failure message for the case where the app never
+     loads, which is a real case worth saying something about. -->
+<script type="module">
+import('./app.js').then(m => m.default()).catch(error => {
+  const box = document.getElementById('error');
+  box.hidden = false;
+  box.textContent = 'Colour Mix could not start. Reload the page, or check your connection. ' + error;
+});
+</script>
+</body>
+</html>

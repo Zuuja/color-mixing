@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- Two drops meeting: mixing, and nothing else. No letter, no enclosing
+       shape, one colour on a transparent ground. The big drop is the target
+       mix, the small one an ingredient joining it; the tips point at each
+       other across the diagonal and the bodies touch.
+
+       One colour, `#444444`, on a transparent ground — the whole family's icon
+       colour. A single static icon is drawn on surfaces it cannot know: the
+       app's own light and dark backgrounds, and whatever wallpaper sits behind
+       a launcher. The bar for a graphical object is 3:1, and `#444444` reaches
+       5.82:1 on the light surface and 3.00:1 on the dark one, which is what one
+       transparent-ground colour can do across both. Re-measure if the palette
+       changes.
+
+       `build.rs` rasterizes the 192 and 512 install PNGs from this file, so
+       this is the icon and the PNGs are derived output. -->
+  <defs>
+    <!-- One drop, drawn once: tip at (0,-150), body a 100-radius circle at
+         (0,30). Placed twice below; `defs` keeps the original from drawing
+         itself at the raw coordinates. -->
+    <path id="drop" d="M 0 -150
+                       C 55 -85 100 -35 100 30
+                       A 100 100 0 1 1 -100 30
+                       C -100 -35 -55 -85 0 -150
+                       Z"/>
+  </defs>
+  <g fill="#444444">
+    <use href="#drop" transform="translate(218 236) rotate(24)"/>
+    <use href="#drop" transform="translate(330 330) rotate(204) scale(0.62)"/>
+  </g>
+</svg>
