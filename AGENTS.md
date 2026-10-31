@@ -8,19 +8,20 @@ points. Generated from `pwa_template`; the shape and the rules are the
 template's, so `INSTRUCTIONS.md` (inherited verbatim) is the coding contract
 and this file only adds what is specific to this app.
 
-AGPL-3.0-only: see `LICENSE`. Two workflows, deliberately split by what they
-may do. `.github/workflows/build.yml` runs on every push and pull request with
-`contents: read` only and publishes nothing; `.github/workflows/pages.yml`
-builds the same site and deploys it to GitHub Pages, behind `pages: write` and
-the `github-pages` environment, from a trunk branch of the repository that owns
-the site and from no other. `tests/shell.rs` asserts that split, both workflows'
-trunk-name trigger (`master` **and** `main` — a fork keeps its own), the deploy
-gate, the pinned generator in both, and that the two run a byte-identical site
-check (`live_build_workflow()` / `live_pages_workflow()`).
+AGPL-3.0-only: see `LICENSE`.
 
-This repository is a fork: its upstream is the public repository the site is
-published from, whose trunk is `main`. Changes reach that site as a pull
-request, so a change that only ever lands here publishes nothing.
+**This repository is retired, and nothing new should land here.** The game moved
+to the managed repository `color-mixing`, which is a fork of the public
+`Zuuja/color-mixing` whose `main` publishes the site; work happens there, in a
+feature copy of that repository, and reaches the site as a pull request from the
+fork. `worktrees/color_mixing/master` stays as the last state of this history and
+is what `/color_mix/` was served from before the move. The two workflows here
+are the same split the move carries: `.github/workflows/build.yml` runs
+read-only on every push and pull request, `.github/workflows/pages.yml` builds
+the same site and publishes it from a trunk branch of the repository that owns
+it, behind `pages: write` and the `github-pages` environment. `tests/shell.rs`
+asserts that split, both trunk names, the deploy gate, and the byte-identical
+site check.
 
 ## The game's shape
 
@@ -89,7 +90,6 @@ mutation-check anything new (comment the line out, watch the test go red).
 
 ## Serving
 
-The released `dist/` is registered in the host's `apps.json` and served at
-`/color_mix/` by the bot server's static-app mount (`src/web/static_site.rs`
-there). Every URL in the site is relative, so the same build also works under
-any other prefix or file host.
+`/color_mix/` is now served from the released `dist/` of `color-mixing` (see
+the host's `apps.json`), not from here. Every URL in the site is relative, so
+the same build works under any other prefix or file host.
