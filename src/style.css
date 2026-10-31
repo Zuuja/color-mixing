@@ -1,0 +1,410 @@
+/* One palette, borrowed from the server this app is served beside, so a PWA
+   opened from the same origin does not look like a different product. The names
+   are that project's tokens unchanged: a page restyled later reuses them instead
+   of inventing a second set of near-identical greys.
+
+   Dark is the default and light is the override, the reverse of the
+   `color-scheme: light dark` convention. It is deliberate: `color-scheme` names
+   the scheme the page is *drawn* in, and a reader who has chosen nothing gets
+   the one this app was designed in. A reader who has chosen gets theirs. */
+:root {
+  color-scheme: dark;
+  --font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  --bg: #0f1117;
+  --surface: #171a23;
+  --surface2: #1e222d;
+  --fg: #e4e7ec;
+  --muted: #8d94a3;
+  --accent: #5fd38a;
+  --accent-fg: #0c1a12;
+  --link: #79b8ff;
+  --border: #2b303c;
+  --danger: #ef6a6a;
+  --good: #5fd38a;
+}
+
+* { box-sizing: border-box; }
+
+html { height: 100%; }
+
+body {
+  margin: 0 auto;
+  min-height: 100%;
+  max-width: 30rem;
+  padding: 1rem .75rem 2rem;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font);
+  font-size: 13.5px;
+  line-height: 1.4;
+}
+
+main {
+  width: min(100%, 26rem);
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: .8rem;
+}
+
+header {
+  display: flex;
+  flex-direction: column;
+  gap: .15rem;
+  text-align: center;
+}
+
+h1 {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 650;
+  letter-spacing: .01em;
+}
+
+#score-line {
+  margin: 0;
+  color: var(--muted);
+  font-size: .8rem;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The two cups: the target and the player's mix. The swatch carries the
+   colour and the aria-hidden, the label carries the words, so a screen reader
+   never meets a bare colour block. */
+#board {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: .6rem;
+}
+
+.cup {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: .35rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: .6rem;
+  padding: .6rem .5rem .7rem;
+}
+
+.cup-label {
+  font-size: .74rem;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  color: var(--muted);
+}
+
+.cup-note {
+  font-size: .72rem;
+  color: var(--muted);
+  min-height: 1em;
+}
+
+.swatch {
+  width: min(100%, 9.5rem);
+  aspect-ratio: 1;
+  border-radius: .55rem;
+  border: 1px solid var(--border);
+  background: repeating-conic-gradient(var(--surface2) 0% 25%, var(--surface) 0% 50%) 0 0 / 1.1rem 1.1rem;
+}
+
+#target-swatch[data-shown="true"] {
+  border-color: var(--fg);
+}
+
+#attempt-swatch[data-shown="false"] {
+  background: repeating-conic-gradient(var(--surface2) 0% 25%, var(--surface) 0% 50%) 0 0 / 1.1rem 1.1rem;
+}
+
+#status {
+  margin: 0;
+  min-height: 1.4em;
+  text-align: center;
+  font-size: .86rem;
+}
+
+#status[data-good="true"] { color: var(--good); }
+#status[data-bad="true"] { color: var(--danger); }
+
+/* The player's picks: one strip, no scrolling. The chips are removed from
+   the flow of the page and shrink to fit whatever the mix needs — a
+   two-colour game never grows past one line. `flex-wrap: nowrap` is the
+   promise the chip's own shrink rules keep: chips give up width before the
+   strip gives up a line. */
+#picks {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: .45rem;
+  min-height: 2.75rem;
+}
+
+#picks:empty {
+  min-height: 0;
+}
+
+#picks .pick {
+  flex: 0 1 auto;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: .35rem;
+  min-height: 44px;
+  padding: .3rem .55rem;
+  border: 1px solid var(--border);
+  border-radius: .5rem;
+  cursor: pointer;
+  font: inherit;
+  touch-action: manipulation;
+  transition: filter .15s;
+}
+
+#picks .pick:hover { filter: brightness(1.1); }
+
+#picks .pick:active { filter: brightness(.88); }
+
+/* The share count, painted on the colour; its text colour is set from the
+   domain's contrast decision. */
+#picks .share {
+  font-family: var(--mono);
+  font-size: 1rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+/* The take-back mark, beside the count: the chip gives a part back per
+   tap, and the cross says which way the number moves. */
+#picks .cross {
+  font-size: .95rem;
+  font-weight: 700;
+  line-height: 1;
+  opacity: .75;
+}
+
+/* How the parts divide: the strip's caption, under the chips. */
+#parts-line {
+  margin: 0;
+  text-align: center;
+  font-size: .76rem;
+  color: var(--muted);
+}
+
+/* Steppers and every other action button: one style, one size. Buttons are
+   44px tall because that is the smallest target a thumb deserves. */
+button {
+  font: inherit;
+  font-size: .82rem;
+  font-weight: 600;
+  min-height: 44px;
+  padding: .28rem .8rem;
+  color: var(--fg);
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: .5rem;
+  cursor: pointer;
+  /* Kill the 300ms tap delay and the double-tap zoom without a framework. */
+  touch-action: manipulation;
+  transition: filter .15s;
+}
+
+/* The pick chips paint their own colour and set their own text colour from
+   the domain's contrast decision; the generic rule must not fight them. */
+#picks .pick {
+  color: inherit;
+}
+
+button:hover { filter: brightness(1.12); }
+
+button:active { filter: brightness(.9); }
+
+button:disabled {
+  opacity: .5;
+  cursor: default;
+  filter: none;
+}
+
+#controls button,
+#palette button {
+  color: var(--fg);
+}
+
+/* The three round actions: Check is the primary and gets the accent. */
+#controls {
+  display: grid;
+  grid-template-columns: 1fr 1.4fr 1fr;
+  gap: .45rem;
+}
+
+#controls #check-button {
+  color: var(--accent-fg);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+/* The palette: a wrapped row of square swatch buttons, each big enough to
+   tap and labelled with the pigment's name for the screen reader. */
+#palette {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(4.2rem, 1fr));
+  gap: .45rem;
+}
+
+#palette .pigment {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: .3rem;
+  padding: .4rem .3rem;
+  min-height: 44px;
+}
+
+#palette .chip {
+  width: 100%;
+  aspect-ratio: 1.6;
+  border-radius: .4rem;
+  border: 1px solid var(--border);
+}
+
+#palette .pigment span {
+  font-size: .7rem;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+/* The picked swatch's part count, painted on the chip itself. */
+#palette .pigment .badge {
+  position: absolute;
+  top: .25rem;
+  right: .3rem;
+  min-width: 1.15rem;
+  padding: 0 .25rem;
+  border-radius: .55rem;
+  background: var(--fg);
+  color: var(--bg);
+  font-family: var(--mono);
+  font-size: .68rem;
+  font-weight: 700;
+  line-height: 1.25rem;
+  text-align: center;
+}
+
+#palette .pigment[data-picked="true"] {
+  border-color: var(--fg);
+  background: var(--surface2);
+}
+
+#palette .pigment[data-hinted="true"] .chip {
+  outline: 3px solid var(--link);
+  outline-offset: 1px;
+}
+
+#hints {
+  margin: 0;
+  min-height: 1.2em;
+  text-align: center;
+  font-size: .8rem;
+  color: var(--muted);
+}
+
+/* Settings: one select per number and one checkbox for the preview rule. */
+#settings {
+  margin-top: .4rem;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: .45rem .6rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: .6rem;
+  padding: .7rem .8rem .8rem;
+}
+
+#settings label {
+  font-size: .76rem;
+  color: var(--muted);
+  align-self: center;
+}
+
+#settings select {
+  font: inherit;
+  font-size: .82rem;
+  min-height: 44px;
+  padding: .2rem .4rem;
+  color: var(--fg);
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: .5rem;
+}
+
+#settings .check-row {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  min-height: 44px;
+}
+
+/* The hide-numbers row only applies in ceilings mode; greyed elsewhere so
+   the control reads as unavailable rather than broken. */
+#settings .check-row[data-off="true"] {
+  opacity: .45;
+}
+
+#settings input[type="checkbox"] {
+  width: 1.15rem;
+  height: 1.15rem;
+  accent-color: var(--accent);
+}
+
+#settings .check-row label {
+  font-size: .8rem;
+  color: var(--fg);
+}
+
+:focus-visible {
+  outline: 3px solid var(--link);
+  outline-offset: 3px;
+}
+
+/* The only line left below the controls is the failure box, and it is hidden
+   until there is something to say — so when it does appear it carries its own
+   top rule, and the page shows no stray divider the rest of the time. */
+#error {
+  margin: .9rem 0 0;
+  padding-top: .55rem;
+  border-top: 1px solid var(--border);
+  color: var(--danger);
+  font-size: .78rem;
+  line-height: 1.5;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    color-scheme: light;
+    --bg: #f5f6f8;
+    --surface: #ffffff;
+    --surface2: #eef0f4;
+    --fg: #20242b;
+    --muted: #5b6270;
+    --accent: #0b8a4e;
+    --accent-fg: #ffffff;
+    --link: #0a5bd3;
+    --border: #d8dce2;
+    --danger: #c23434;
+    --good: #0b8a4e;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+}
