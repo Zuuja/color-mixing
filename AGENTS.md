@@ -8,10 +8,19 @@ points. Generated from `pwa_template`; the shape and the rules are the
 template's, so `INSTRUCTIONS.md` (inherited verbatim) is the coding contract
 and this file only adds what is specific to this app.
 
-AGPL-3.0-only: see `LICENSE`. Private repository: served from the box that
-builds it, so there is **no Pages workflow** — `.github/workflows/build.yml`
-is the only workflow, and `tests/shell.rs` asserts that shape (it reads
-`build.yml` through `live_build_workflow()`).
+AGPL-3.0-only: see `LICENSE`. Two workflows, deliberately split by what they
+may do. `.github/workflows/build.yml` runs on every push and pull request with
+`contents: read` only and publishes nothing; `.github/workflows/pages.yml`
+builds the same site and deploys it to GitHub Pages, behind `pages: write` and
+the `github-pages` environment, from a trunk branch of the repository that owns
+the site and from no other. `tests/shell.rs` asserts that split, both workflows'
+trunk-name trigger (`master` **and** `main` — a fork keeps its own), the deploy
+gate, the pinned generator in both, and that the two run a byte-identical site
+check (`live_build_workflow()` / `live_pages_workflow()`).
+
+This repository is a fork: its upstream is the public repository the site is
+published from, whose trunk is `main`. Changes reach that site as a pull
+request, so a change that only ever lands here publishes nothing.
 
 ## The game's shape
 
@@ -70,7 +79,7 @@ cargo fmt --check
 
 `tests/shell.rs` is the template's executable specification adapted to this
 app: the file-list/allowlist invariants, the workflow assertions (read from
-`build.yml` with comments stripped), the icon digest pin
+`build.yml` and `pages.yml` with comments stripped), the icon digest pin
 (`6f985823…`, two drops meeting, in the family grey `#444444`), and this
 app's own additions — the preview rule living in the domain module, and every
 game word rendered from it rather than composed in the UI. Source-text tests

@@ -30,6 +30,15 @@ touch build.rs && cargo build --release --locked
 `wasm-bindgen` must match the `=0.2.128` pin in `Cargo.toml` exactly.
 `cargo test --locked` needs none of the above.
 
+## Publish
+
+`.github/workflows/build.yml` builds the site on every push and pull request
+and runs a check on the `dist/` it produced; it publishes nothing.
+`.github/workflows/pages.yml` runs the same build and check, then deploys to
+GitHub Pages — from a trunk branch of this repository only, and never from a
+fork of it. Enable Pages on the repository (source: GitHub Actions) once, and
+every merge to the trunk publishes the site.
+
 ## Layout
 
     src/mix.rs             the game: palette, rounds, attempts, hints, score

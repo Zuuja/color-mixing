@@ -13,16 +13,26 @@ name: build
 # still build, or that the two steps still agree. That is the gap this closes
 # -- it runs both steps from a clean checkout and then inspects the `dist/`
 # they produced, rather than trusting a green job. Nothing is published here;
-# `dist/` is left as a workflow artifact. This app is served from the box that
-# builds it, so there is deliberately no Pages deploy beside this file.
+# `dist/` is left as a workflow artifact. Publishing is `.github/workflows/
+# pages.yml`, deliberately a separate file: it runs the same build and the same
+# site check, and adds the deploy behind permissions and an environment that do
+# not exist on a pull request -- including one from a fork. Keeping them apart
+# keeps this file runnable by anyone who can push a branch, with `contents:
+# read` only.
 #
 # The generator version, the icon digest and the site check below are asserted
 # from `tests/shell.rs`, so they cannot drift from `Cargo.toml`, from
 # `assets/icon.svg` or from this file's own claims.
+#
+# Both trunk names are listed because a fork keeps its own trunk name: the
+# upstream repository this app is published to calls it `main`, so a checkout of
+# it -- and the pull request from it -- has no `master` at all. A push there
+# must build the site and run the check; only the deploy in `pages.yml` is
+# gated on which repository it is in.
 
 on:
   push:
-    branches: [master]
+    branches: [master, main]
   pull_request:
   workflow_dispatch:
 

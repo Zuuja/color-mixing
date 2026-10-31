@@ -1221,14 +1221,26 @@ permissions:
     );
 }
 
-/// The build workflow, as committed, with its comments stripped.
+/// The read-only build workflow, as committed, with its comments stripped.
 ///
-/// The only workflow this repository has: the app is served from the box that
-/// builds it, so there is no Pages deploy to gate. Every assertion about a
-/// setting reads this, not the file, so commenting a line out satisfies
-/// nothing.
+/// This is the half that runs on every pull request, including from a fork, so
+/// it holds no publishing permission. The half that publishes is `pages.yml`,
+/// read through [`live_pages_workflow`]; the two run the same build and the same
+/// site check, and the tests below hold them to it.
+///
+/// Every assertion about a setting reads the stripped text, not the file, so
+/// commenting a line out satisfies nothing.
 fn live_build_workflow() -> Option<String> {
     workflow("build.yml").map(|text| strip_yaml_comments(&text))
+}
+
+/// The publishing workflow, as committed, with its comments stripped.
+///
+/// Read the same way and for the same reason as [`live_build_workflow`]: a
+/// comment above a gate explains what the gate is for by name, so an assertion
+/// over the raw text is satisfied by the explanation with the gate deleted.
+fn live_pages_workflow() -> Option<String> {
+    workflow("pages.yml").map(|text| strip_yaml_comments(&text))
 }
 
 /// The workflow must build the site itself, in the documented order, because
@@ -1291,6 +1303,18 @@ fn the_build_generates_bindings_for_the_pinned_runtime() {
     let Some(build) = live_build_workflow() else {
         return;
     };
+    generator_matches_the_pinned_runtime("build.yml", &build);
+}
+
+/// Both workflows install the generator, so both have to install the runtime the
+/// crate was compiled against.
+///
+/// This is the shared body of the two tests that call it. It takes the
+/// workflow's name for its messages so a failure names the file that is wrong:
+/// `build.yml` runs on every pull request and `pages.yml` is the one that
+/// publishes, and a version pin that drifted in only one of them would label the
+/// other as the culprit if the message were hard-coded.
+fn generator_matches_the_pinned_runtime(workflow_name: &str, build: &str) {
     let manifest = std::fs::read_to_string(root().join("Cargo.toml")).expect("Cargo.toml");
     let pinned = manifest
         .lines()
@@ -1309,9 +1333,9 @@ fn the_build_generates_bindings_for_the_pinned_runtime() {
     );
     let version = pinned.trim_start_matches('=');
 
-    let env = top_level_env(&build).unwrap_or_else(|| {
+    let env = top_level_env(build).unwrap_or_else(|| {
         panic!(
-            "build.yml must have a top-level `env:` block declaring WASM_BINDGEN_VERSION: \
+            "{workflow_name} must have a top-level `env:` block declaring WASM_BINDGEN_VERSION: \
              {version}; the install step reads $WASM_BINDGEN_VERSION, an undeclared variable \
              expands to nothing, and the job would then generate bindings for no runtime"
         )
@@ -1319,7 +1343,7 @@ fn the_build_generates_bindings_for_the_pinned_runtime() {
     assert_eq!(
         env.get("WASM_BINDGEN_VERSION").map(String::as_str),
         Some(version),
-        "build.yml's WASM_BINDGEN_VERSION must be exactly the Cargo.toml pin ({version})",
+        "{workflow_name}'s WASM_BINDGEN_VERSION must be exactly the Cargo.toml pin ({version})",
     );
     // And the install must read the variable, not a literal.
     let mut uses = build.lines().filter_map(|line| {
@@ -1330,13 +1354,13 @@ fn the_build_generates_bindings_for_the_pinned_runtime() {
     let install = uses.next().expect("the install step declares a version");
     assert_eq!(
         install, "$WASM_BINDGEN_VERSION",
-        "build.yml must install the generator with version=\"$WASM_BINDGEN_VERSION\" rather \
+        "{workflow_name} must install the generator with version=\"$WASM_BINDGEN_VERSION\" rather \
          than a literal, so the pin in Cargo.toml has exactly one place to be wrong"
     );
     assert_eq!(
         build.matches("version=\"").count(),
         1,
-        "build.yml must name the generator version exactly once"
+        "{workflow_name} must name the generator version exactly once"
     );
 }
 
@@ -1351,17 +1375,30 @@ fn the_build_generates_bindings_for_the_pinned_runtime() {
 /// not the absence.
 #[test]
 fn the_workflow_declines_a_cfg_this_crate_does_not_need() {
-    let Some(build) = live_build_workflow() else {
-        return;
-    };
-    let env = top_level_env(&build).unwrap_or_default();
-    assert!(
-        !env.contains_key("RUSTFLAGS"),
-        "build.yml declares RUSTFLAGS={}; this crate uses no unstable web-sys API and its \
-         wasm build was verified clean without it, so the flag can only make the wasm clippy \
-         run lint a different web-sys than the one that ships",
-        env.get("RUSTFLAGS").map_or("", String::as_str),
-    );
+    // Both workflows, because they both build the wasm: a flag added to the
+    // publishing one alone would make the shipped clippy run lint a different
+    // program from the one the pull request checked.
+    let mut seen = 0;
+    for (name, live) in [
+        ("build.yml", live_build_workflow()),
+        ("pages.yml", live_pages_workflow()),
+    ] {
+        let Some(live) = live else {
+            continue;
+        };
+        seen += 1;
+        let env = top_level_env(&live).unwrap_or_default();
+        assert!(
+            !env.contains_key("RUSTFLAGS"),
+            "{name} declares RUSTFLAGS={}; this crate uses no unstable web-sys API and its \
+             wasm build was verified clean without it, so the flag can only make the wasm \
+             clippy run lint a different web-sys than the one that ships",
+            env.get("RUSTFLAGS").map_or("", String::as_str),
+        );
+    }
+    // A partial export need not carry either workflow; the manifest and config
+    // checks below stand on their own and are the ones that never skip.
+    let _ = seen;
     let manifest = std::fs::read_to_string(root().join("Cargo.toml")).expect("Cargo.toml");
     assert!(
         !manifest.contains("rustflags"),
@@ -1501,6 +1538,393 @@ fn the_workflow_lints_both_targets() {
         build
             .contains("cargo clippy --locked --lib --target wasm32-unknown-unknown -- -D warnings"),
         "build.yml must lint the wasm target; a clean host build says nothing about the wasm one"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The Pages deployment
+//
+// `dist/` is gitignored and `app.js`/`app_bg.wasm` exist nowhere else in the
+// tree, so a Pages build serving committed files cannot publish the game at all:
+// the page would load and never start. `.github/workflows/pages.yml` is
+// therefore not an optimisation, it is the thing that makes the site exist
+// off-host. The assertions below are the invariants that survive it being edited
+// by hand, which is what happens to a YAML file that no test reads.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The publishing workflow installs the generator for the pinned runtime too.
+///
+/// Same invariant as the build one, checked separately rather than assumed: the
+/// two files are edited independently, and the failure is silent in both — a
+/// live site that fails at startup, for every visitor, and only in a browser.
+#[test]
+fn the_pages_build_generates_bindings_for_the_pinned_runtime() {
+    let Some(pages) = live_pages_workflow() else {
+        return;
+    };
+    generator_matches_the_pinned_runtime("pages.yml", &pages);
+}
+
+/// The site cannot be published by serving committed files, so the workflow that
+/// publishes it has to run both builds itself, in order.
+///
+/// `dist/` is gitignored and two of its files — `app.js` and `app_bg.wasm`,
+/// written by `wasm-bindgen` — exist nowhere else in the tree. A workflow that
+/// deployed a checked-out `dist/` would publish a page that loads and never
+/// starts, and the workflow would be green throughout.
+///
+/// The order is the second half of the contract: `build.rs` derives the service
+/// worker's cache version from the bytes of every other file in `dist/`, the
+/// wasm included, so running it first pins the cache to whatever the previous
+/// build left behind. The `touch` is not redundancy — `build.rs` writes into the
+/// source tree rather than `OUT_DIR`, so cargo cannot see its own output change
+/// and skips the second build, leaving `dist/` with the two wasm artefacts and
+/// none of the shell files.
+#[test]
+fn the_pages_workflow_builds_the_site_it_publishes() {
+    let Some(pages) = live_pages_workflow() else {
+        return;
+    };
+
+    let wasm_build = pages
+        .find("cargo build --locked --lib --target wasm32-unknown-unknown")
+        .expect(
+            "pages.yml must build the wasm target: app.js and app_bg.wasm are gitignored build \
+             output, and nothing committed produces them",
+        );
+    let bindings = pages
+        .find("wasm-bindgen --target web")
+        .expect("pages.yml must run the bindings generator; it is the only writer of dist/app.js");
+    let touch = pages.find("touch build.rs").expect(
+        "pages.yml must touch build.rs before the host build; build.rs writes into the source \
+         tree rather than OUT_DIR, so without the touch the second build is a no-op",
+    );
+    let host_build = pages
+        .find("cargo build --release --locked")
+        .expect("pages.yml must run the host build: build.rs writes the shell files from it");
+    assert!(
+        wasm_build < bindings && bindings < touch && touch < host_build,
+        "the two builds must run in order — wasm, bindings, touch build.rs, host. The worker's \
+         cache version is hashed from the wasm, so a host build first pins it to whatever the \
+         previous build left behind (wasm@{wasm_build}, bindings@{bindings}, touch@{touch}, \
+         host@{host_build})",
+    );
+
+    // The wasm artefact follows the crate's own name, and a renamed crate that
+    // misses this publishes bindings for no crate at all.
+    let manifest = std::fs::read_to_string(root().join("Cargo.toml")).expect("Cargo.toml");
+    let crate_name = manifest
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("name = "))
+        .map(|rest| rest.trim().trim_matches('"').to_owned())
+        .expect("Cargo.toml names the package");
+    assert!(
+        pages.contains(&format!(
+            "target/wasm32-unknown-unknown/release/{crate_name}.wasm"
+        )),
+        "pages.yml must bind the crate's own wasm ({crate_name}.wasm)",
+    );
+
+    // And it must check what it built: the file list it publishes is the same
+    // nine the two owners produce, read out of the workflow rather than
+    // duplicated here.
+    let expected = pages
+        .lines()
+        .find_map(|line| {
+            let value = line.trim().strip_prefix("expected=")?;
+            value.strip_prefix('"')?.strip_suffix('"')
+        })
+        .expect("pages.yml must declare the file list it expects in dist/");
+    let listed: Vec<&str> = expected.split_whitespace().collect();
+    assert_eq!(
+        listed, DIST_FILES,
+        "pages.yml's site check must name exactly the nine files the build publishes",
+    );
+    // The four silent shapes a green build can still be.
+    for (needle, why) in [
+        (
+            "__VERSION__",
+            "the worker's cache version would never be substituted",
+        ),
+        ("'export'", "the page's dynamic import would fail"),
+        ("__wbindgen_start", "the game would load and never run"),
+        ("m.default()", "the page would never start the game"),
+    ] {
+        assert!(
+            pages.contains(needle),
+            "pages.yml must check for {needle} in the built site: {why}",
+        );
+    }
+    assert!(
+        pages.lines().any(|line| line.contains("89504e470d0a1a0a")),
+        "pages.yml must check the PNG magic number; an icon with the right name and no raster \
+         installs as a broken icon",
+    );
+    assert!(
+        pages.contains("<<'PY'") && !pages.contains("python3 -c"),
+        "pages.yml's multi-line Python must be a <<'PY' heredoc; an indented python3 -c body is \
+         quoted by the shell before Python sees it",
+    );
+}
+
+/// A deploy that can run from any branch is a deploy a stranger can run.
+///
+/// `pages: write` and `id-token: write` are the two permissions that let a job
+/// overwrite the live site, and the token behind them is minted for the
+/// repository however the workflow was reached. Publishing on every merge to a
+/// trunk is the point; publishing from anywhere else is not, so the invariant is
+/// the narrow one that survives the convenience: a trunk branch is the only ref
+/// that reaches the live site, and the publishing permissions live in the one job
+/// gated on it.
+#[test]
+fn only_a_trunk_branch_can_reach_the_live_site() {
+    let Some(raw) = workflow("pages.yml") else {
+        return;
+    };
+
+    // The trigger must name the branches, not be a bare `push:`, which deploys
+    // from every branch that exists — including a contributor's. Both trunk
+    // names are listed because a fork's own trunk is `main`; what may actually
+    // publish is decided by the deploy job's gate below, not here.
+    let branches = raw
+        .lines()
+        .map(str::trim)
+        .find(|line| line.starts_with("branches:"))
+        .expect("pages.yml must state the branches it runs on");
+    for branch in ["master", "main"] {
+        assert!(
+            branches.contains(branch),
+            "pages.yml must trigger on {branch} as well as the other trunk name, not a bare \
+             `push:`; a bare push deploys from every branch, including other people's (found \
+             {branches:?})",
+        );
+    }
+    // No tag trigger: a tagged commit that never reached a trunk would be
+    // published.
+    assert!(
+        !raw.contains("tags:"),
+        "pages.yml must not also deploy on tags; a tagged commit that never reached a trunk \
+         would be published",
+    );
+
+    // The deploy job's own gate, read out with comments stripped: the comment
+    // block above the `if:` explains both halves by name, so a plain search over
+    // the raw text is satisfied by that explanation with the gate itself deleted.
+    let live = strip_yaml_comments(&raw);
+    let deploy_job = live
+        .split("\n  deploy:")
+        .nth(1)
+        .expect("pages.yml must have a `deploy:` job");
+    let gate = deploy_job
+        .split_once("if:")
+        .map(|(_, after)| after)
+        .expect("the `deploy` job must have an `if:` gate");
+
+    // Half one: a trunk branch, and only a trunk branch.
+    for branch in ["master", "main"] {
+        assert!(
+            gate.contains(&format!("refs/heads/{branch}")),
+            "the `deploy` job must be gated on a build for `{branch}`, the branch a merge lands \
+             on; the trigger alone is not the gate",
+        );
+    }
+
+    // Half two: and only in the repository that owns the site. Both of these
+    // repositories exist with both trunk names, and `pages.yml` is deliberately
+    // identical in them, so a gate that tested only the branch name could not
+    // tell them apart. A fork has no Pages site until someone enables one by
+    // hand, and until then every push there dies at "Creating Pages deployment
+    // failed ... Ensure GitHub Pages has been enabled"; if it were enabled, the
+    // fork would serve its own copy and drift from the published site.
+    //
+    // `github.event.repository.fork` is the discriminator because it needs no
+    // configuration: it is supplied by the event, false upstream and true in the
+    // fork. A repository Actions variable would have to be set on the upstream
+    // repository, whose owner this account is not, so the gate would ship
+    // silently off on the one repository where it matters.
+    assert!(
+        gate.contains("!github.event.repository.fork"),
+        "the `deploy` job must be gated on `!github.event.repository.fork`; this workflow is \
+         identical in the fork, so a branch-name-only gate tries to publish from both",
+    );
+
+    // And the environment, which is what makes the repository's own approval
+    // rules able to hold the live site back.
+    assert!(
+        deploy_job.contains("github-pages"),
+        "the deploy must run in the `github-pages` environment, or a protected branch or a \
+         reviewer-gated environment cannot stop it",
+    );
+
+    // The permissions that can publish belong to that job alone, never
+    // workflow-wide: granted globally, a build step or a third-party action
+    // added later can spend them, and the build job is the one that runs other
+    // people's scripts.
+    assert!(
+        !live.contains("pages: write") || deploy_job.contains("pages: write"),
+        "the workflow declares `pages: write` somewhere other than the deploy job",
+    );
+    let build_job = live
+        .split("\n  build:")
+        .nth(1)
+        .and_then(|after| after.split("\n  deploy:").next())
+        .expect("pages.yml must have a `build:` job");
+    assert!(
+        !build_job.contains("pages: write") && !build_job.contains("id-token: write"),
+        "the `build` job must not hold pages: write or id-token: write; those belong to \
+         `deploy`, where the trunk gate is",
+    );
+}
+
+/// The deploy has to be handed something the upload actually produced.
+///
+/// `deploy-pages` v5 takes `artifact_name`. There is no `artifact_id` input:
+/// passing one is reported as `Unexpected input(s) 'artifact_id'`, warned about,
+/// and ignored — the action then falls back to its own default, which is only the
+/// right answer while the upload side defaults to the same string.
+#[test]
+fn the_deploy_is_handed_the_artifact_the_build_uploaded() {
+    let Some(pages) = live_pages_workflow() else {
+        return;
+    };
+
+    assert!(
+        !pages.contains("artifact_id:"),
+        "pages.yml passes `artifact_id` to deploy-pages v5, which has no such input; it is \
+         warned about and ignored, leaving the deploy to guess the artifact name",
+    );
+    // The Pages artifact is a single tarball the deploy finds *by name*, so a
+    // plain `upload-artifact` gives a green build and then a deploy that cannot
+    // find what it was given.
+    assert!(
+        pages.contains("upload-pages-artifact") && !pages.contains("upload-artifact@"),
+        "pages.yml must upload with `actions/upload-pages-artifact`, not \
+         `actions/upload-artifact`",
+    );
+
+    // Both sides name the artifact the same way, read out rather than asserted
+    // as a fixed string, so the invariant is the agreement and not the name.
+    // Only the artifact's own keys are read: `artifact_name:` is unique, and the
+    // upload's `name:` is the one indented ten spaces — a step's own `name:` is
+    // eight and the `deploy` job's is four.
+    let name_of = |key: &str, indent: usize| {
+        pages.lines().find_map(|line| {
+            let prefix = format!("{}{key}: ", " ".repeat(indent));
+            Some(
+                line.strip_prefix(prefix.as_str())?
+                    .trim()
+                    .trim_matches('"')
+                    .to_owned(),
+            )
+        })
+    };
+    let uploaded = name_of("name", 10).expect(
+        "pages.yml must state the upload step's artifact `name:` so the deploy can match it",
+    );
+    let deployed = name_of("artifact_name", 10).expect(
+        "pages.yml must pass `artifact_name:` to deploy-pages, or it uses a default that can \
+         drift from the upload",
+    );
+    assert_eq!(
+        uploaded, deployed,
+        "the artifact the build uploads and the one the deploy asks for must be the same name",
+    );
+    assert_eq!(
+        uploaded, "github-pages",
+        "the artifact name should stay `github-pages`, the default both actions agree on; \
+         renaming it is fine, but rename it on both sides in the same commit",
+    );
+}
+
+/// The Pages deployment is a separate workflow, not extra steps in `build.yml`.
+///
+/// `build.yml` runs on every pull request, including from forks, where
+/// `pages: write`, `id-token: write` and the `github-pages` environment do not
+/// exist. A deploy folded into it is a workflow that can fail to run for every
+/// ordinary pull request, and one that is reachable from every branch that can
+/// open one. This is the check that the split stays a split.
+#[test]
+fn the_deploy_is_not_folded_into_the_read_only_build() {
+    let Some(build) = live_build_workflow() else {
+        return;
+    };
+    for forbidden in [
+        "deploy-pages",
+        "upload-pages-artifact",
+        "pages: write",
+        "id-token: write",
+    ] {
+        assert!(
+            !build.contains(forbidden),
+            "build.yml references {forbidden}; it runs on pull requests from forks, where the \
+             Pages permissions and environment do not exist, so the deploy must live in \
+             pages.yml",
+        );
+    }
+    // And the build it does still has to be able to produce the site, or the
+    // split has cost the read-only check rather than adding a second one.
+    assert!(
+        build.contains("cargo build --locked --lib --target wasm32-unknown-unknown")
+            && build.contains("wasm-bindgen --target web")
+            && build.contains("cargo build --release --locked"),
+        "build.yml must still run both builds itself: the check it runs is the only one that \
+         ever sees dist/ on a pull request",
+    );
+}
+
+/// Both workflows run the same site check, on the same output.
+///
+/// `build.yml` runs it on every pull request; `pages.yml` runs it again before
+/// publishing. Drifted apart, each asserts things the other does not, so a pull
+/// request can go green on a site the deploy rejects, and the deploy can publish
+/// a file the pull request never checked.
+#[test]
+fn both_workflows_run_the_same_site_check() {
+    let step = |name: &str| -> Option<String> {
+        let text = workflow(name)?;
+        let start = text.find("      - name: Check the built site")?;
+        let end = text[start..].find("      - name: Run the tests")? + start;
+        Some(text[start..end].to_owned())
+    };
+    let (Some(build), Some(pages)) = (step("build.yml"), step("pages.yml")) else {
+        return; // a partial export need not carry every workflow
+    };
+    assert_eq!(
+        build, pages,
+        "the site check must be identical in build.yml and pages.yml: one runs on pull requests \
+         and the other before publishing, and a check that differs between them lets a pull \
+         request pass a site the deploy rejects",
+    );
+}
+
+/// The read-only build runs on both trunk names, and it has to.
+///
+/// The repository this app is published to is a fork whose trunk is `main`, so a
+/// checkout or pull request there has no `master` branch at all. Listing only
+/// `master` would leave every push to that trunk with no build and no site
+/// check — green by absence, which is the worst kind of green.
+#[test]
+fn the_build_workflow_runs_on_both_trunk_names() {
+    let Some(build) = live_build_workflow() else {
+        return;
+    };
+    let branches = build
+        .lines()
+        .map(str::trim)
+        .find(|line| line.starts_with("branches:"))
+        .expect("build.yml must state the branches it runs on");
+    for branch in ["master", "main"] {
+        assert!(
+            branches.contains(branch),
+            "build.yml must run on {branch} as well as the other trunk name (found {branches:?}): \
+             the fork whose trunk is written above has no `master` at all, and a push there that \
+             triggers nothing looks exactly like a passing build",
+        );
+    }
+    assert!(
+        build.contains("pull_request:"),
+        "build.yml must still run on pull requests: it is the read-only check that a fork's pull \
+         request can run",
     );
 }
 
