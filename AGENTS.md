@@ -15,8 +15,9 @@ builds the same site and deploys it to GitHub Pages, behind `pages: write` and
 the `github-pages` environment, from a trunk branch of the repository that owns
 the site and from no other. `tests/shell.rs` asserts that split, both workflows'
 trunk-name trigger (`master` **and** `main` — a fork keeps its own), the deploy
-gate, the pinned generator in both, and that the two run a byte-identical site
-check (`live_build_workflow()` / `live_pages_workflow()`).
+gate, the lock-derived generator version in both, and that the two run a
+byte-identical site check (`live_build_workflow()` /
+`live_pages_workflow()`).
 
 **Where this lives.** `origin` is `bot-git-ai/color-mixing`, a fork of the
 public `Zuuja/color-mixing` (`upstream`), and the fork is the repository this
@@ -76,8 +77,11 @@ wasm-bindgen --target web --no-typescript --out-dir dist --out-name app \
 touch build.rs && cargo build --release --locked
 ```
 
-`wasm-bindgen` is pinned `=0.2.128` in `Cargo.toml` and the CLI must match
-exactly (a mismatched generator fails at page load, not at compile time).
+`Cargo.toml` asks for `wasm-bindgen = "0.2"` and `Cargo.lock` records the one
+version that means, because `wasm-bindgen-futures`, `js-sys` and `web-sys` each
+depend on an exact `wasm-bindgen`. The CLI must be that version (a mismatched
+generator fails at page load, not at compile time), and both workflows read it
+from `Cargo.lock` instead of naming it, so there is nothing to keep in step.
 `cargo build` writes the nine-file site into `dist/`; nothing generated is
 committed.
 
