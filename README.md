@@ -27,7 +27,12 @@ wasm-bindgen --target web --no-typescript --out-dir dist --out-name app \
 touch build.rs && cargo build --release --locked
 ```
 
-`wasm-bindgen` must match the `=0.2.128` pin in `Cargo.toml` exactly.
+`wasm-bindgen` must be the version `Cargo.lock` records: `Cargo.toml` asks for
+`wasm-bindgen = "0.2"` and the lock decides what that means, because
+`wasm-bindgen-futures`, `js-sys` and `web-sys` each depend on one exact
+`wasm-bindgen`. Install the CLI at that version — a mismatched generator
+produces bindings the page will not load, and it fails with "The app could not
+start".
 `cargo test --locked` needs none of the above.
 
 ## Publish
